@@ -921,16 +921,11 @@ fn check_cmd(ctx: &Ctx, a: CodeCheckArgs) -> crate::Result<(bool, Value)> {
 /// decomp/'s functions that names/ names whose last check was on other C
 /// or other names, or that have none.
 fn changed(root: &Path, names: &Names) -> Vec<String> {
-    let (c, n) = (sources_hash(root), names_hash(root));
-    let read = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let mut out: Vec<String> = c_functions(root)
         .into_iter()
         .map(|(f, _, _)| f)
         .filter(|f| entry(names, f).is_ok())
-        .filter(|f| {
-            read(check_file(root, f))
-                .is_none_or(|k| k["sources"].as_str() != Some(c.as_str()) || k["names"].as_str() != Some(n.as_str()))
-        })
+        .filter(|f| last_check_in(root, names, f).is_none_or(|k| k["stale"] == true))
         .collect();
     out.dedup();
     out
@@ -1128,7 +1123,7 @@ fn check_one(
         v[k] = x.clone();
     }
     v["entry_bytes"] = json!(held);
-    save_check(root, function, &from, &v);
+    save_check(root, names, function, &from, &v);
     v.as_object_mut().unwrap().remove("entry_bytes");
     Ok((ok, v))
 }
@@ -1214,7 +1209,139 @@ pub fn names_hash(root: &Path) -> String {
 }
 
 /// Keep a check's result: the function's last, and a line in the log.
-fn save_check(root: &Path, function: &str, from: &Value, v: &Value) {
+/// FNV-1a over `parts`, each ended by a 0.
+fn fnv<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for p in parts {
+        for &b in p.iter().chain(&[0]) {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    format!("{h:016x}")
+}
+
+/// The words of C text that could name something.
+fn idents(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+        .map(String::from)
+        .collect()
+}
+
+fn type_words(ty: &Type, out: &mut Vec<String>) {
+    match ty {
+        Type::Named { name } => out.push(name.clone()),
+        Type::Pointer { to, .. } => type_words(to, out),
+        Type::Array { of, .. } => type_words(of, out),
+        Type::Function(sig) => {
+            type_words(&sig.ret, out);
+            for p in &sig.params {
+                type_words(&p.ty, out);
+            }
+        }
+    }
+}
+
+/// What a function's check depends on, as the hashes `(sources, names)`
+/// it keeps, so the check goes stale only when they change:
+/// - sources: decomp/'s headers, the file that defines the function, and
+///   the files of the decomp/ functions those name (the C's own takes a
+///   call over, so a callee's C is part of the function's);
+/// - names: the header's declarations of the names that C uses and the
+///   function's own, with the types they reach (comments and lines left
+///   out, so other names' edits leave it alone).
+pub fn check_key(root: &Path, names: &Names, function: &str) -> (String, String) {
+    let bare = function.rsplit_once(':').map_or(function, |(_, n)| n);
+    let defs = c_functions(root);
+    let mut files: BTreeSet<String> = defs.iter().filter(|(n, _, _)| n == bare).map(|(_, f, _)| f.clone()).collect();
+    let mut headers: Vec<PathBuf> = std::fs::read_dir(root.join("decomp"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "h"))
+        .collect();
+    headers.sort();
+    let mut words: BTreeSet<String> = BTreeSet::from([bare.to_string()]);
+    for h in &headers {
+        words.extend(idents(&std::fs::read_to_string(h).unwrap_or_default()));
+    }
+    let mut todo: Vec<String> = files.iter().cloned().collect();
+    while let Some(f) = todo.pop() {
+        for w in idents(&std::fs::read_to_string(root.join("decomp").join(&f)).unwrap_or_default()) {
+            for (n, file, _) in &defs {
+                if *n == w && files.insert(file.clone()) {
+                    todo.push(file.clone());
+                }
+            }
+            words.insert(w);
+        }
+    }
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    for h in &headers {
+        parts.push(h.file_name().unwrap_or_default().to_string_lossy().as_bytes().to_vec());
+        parts.push(std::fs::read(h).unwrap_or_default());
+    }
+    for f in &files {
+        parts.push(f.as_bytes().to_vec());
+        parts.push(std::fs::read(root.join("decomp").join(f)).unwrap_or_default());
+    }
+    let sources = fnv(parts.iter().map(|p| p.as_slice()));
+
+    // The names those words reach: a type by its name or one of its enum
+    // values, a global or function by its name, then the types each holds.
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    let mut todo: Vec<String> = words.into_iter().collect();
+    let (mut types, mut globals, mut functions) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+    while let Some(w) = todo.pop() {
+        if !reached.insert(w.clone()) {
+            continue;
+        }
+        let mut more = Vec::new();
+        for (i, t) in names.types.iter().enumerate() {
+            let value = matches!(&t.body, TypeBody::Enum { values } if values.iter().any(|v| v.name.text == w));
+            if (t.name.text == w || value) && types.insert(i) {
+                more.push(t.name.text.clone());
+                match &t.body {
+                    TypeBody::Struct { fields } | TypeBody::Union { fields } => {
+                        fields.iter().for_each(|f| type_words(&f.ty, &mut more))
+                    }
+                    TypeBody::Typedef { ty } => type_words(ty, &mut more),
+                    TypeBody::Enum { .. } => {}
+                }
+            }
+        }
+        for (i, g) in names.globals.iter().enumerate() {
+            if g.name.text == w && globals.insert(i) {
+                g.ty.iter().for_each(|ty| type_words(ty, &mut more));
+            }
+        }
+        for (i, f) in names.functions.iter().enumerate() {
+            if f.name.text == w && functions.insert(i) {
+                if let Some(sig) = &f.signature {
+                    type_words(&Type::Function(sig.clone()), &mut more);
+                }
+            }
+        }
+        todo.extend(more);
+    }
+    let mut used = Names::default();
+    used.types = types.into_iter().map(|i| names.types[i].clone()).collect();
+    used.globals = globals.into_iter().map(|i| names.globals[i].clone()).collect();
+    used.functions = functions
+        .into_iter()
+        .map(|i| {
+            let mut f = names.functions[i].clone();
+            f.locals.clear();
+            f
+        })
+        .collect();
+    let (h, ld, _) = header(&used);
+    (sources, fnv([h.as_bytes(), ld.as_bytes()]))
+}
+
+fn save_check(root: &Path, names: &Names, function: &str, from: &Value, v: &Value) {
+    let (sources, names_key) = check_key(root, names, function);
     let commit = std::process::Command::new("git")
         .current_dir(root)
         .args(["rev-parse", "--verify", "-q", "HEAD"])
@@ -1225,7 +1352,7 @@ fn save_check(root: &Path, function: &str, from: &Value, v: &Value) {
     let first = v["cases"].as_array().and_then(|c| c.iter().find(|c| c["passed"] == false)).cloned();
     let kept = json!({
         "function": function, "status": v["status"], "passed": v["passed"], "failed": v["failed"],
-        "at": crate::now_ms() as u64, "commit": commit, "sources": sources_hash(root), "names": names_hash(root),
+        "at": crate::now_ms() as u64, "commit": commit, "sources": sources, "names": names_key,
         "state": from["state"], "recordings": from["recordings"], "branch_ways": v["branch_ways"],
         "first_failure": first, "messages": v["messages"],
         "entry_bytes": v["entry_bytes"],
@@ -1302,13 +1429,17 @@ pub fn c_functions(root: &Path) -> Vec<(String, String, usize)> {
     out
 }
 
-/// A function's last check, with `stale` when the C or names changed since.
+/// A function's last check, with `stale` when its C or the names it uses
+/// changed since ([`check_key`]).
 pub fn last_check(root: &Path, function: &str) -> Option<Value> {
+    last_check_in(root, &psx_symbols::names::load(root), function)
+}
+
+/// [`last_check`] with the names loaded.
+pub fn last_check_in(root: &Path, names: &Names, function: &str) -> Option<Value> {
     let mut k: Value = serde_json::from_slice(&std::fs::read(check_file(root, function)).ok()?).ok()?;
-    k["stale"] = json!(
-        k["sources"].as_str() != Some(sources_hash(root).as_str())
-            || k["names"].as_str() != Some(names_hash(root).as_str())
-    );
+    let (sources, names_key) = check_key(root, names, function);
+    k["stale"] = json!(k["sources"].as_str() != Some(sources.as_str()) || k["names"].as_str() != Some(names_key.as_str()));
     Some(k)
 }
 
@@ -1346,7 +1477,7 @@ pub fn counts(root: &Path) -> Value {
     let c = c_functions(root);
     let passing = c
         .iter()
-        .filter(|(n, _, _)| last_check(root, n).is_some_and(|k| k["status"] == "passed" && k["stale"] == false))
+        .filter(|(n, _, _)| last_check_in(root, &names, n).is_some_and(|k| k["status"] == "passed" && k["stale"] == false))
         .count();
     json!({"named": names.functions.len(), "in_c": c.len(), "passing": passing})
 }
@@ -1421,12 +1552,12 @@ impl Replacement {
                 left_out.push((f, "decomp/ does not define it".into()));
                 continue;
             };
-            let check = last_check(root, &f);
+            let check = last_check_in(root, names, &f);
             if which.is_empty() {
                 let why = match &check {
                     None => Some("never checked"),
                     Some(k) if k["status"] != "passed" => Some("its last check did not pass"),
-                    Some(k) if k["stale"] == true => Some("the C or names changed since its last check"),
+                    Some(k) if k["stale"] == true => Some("its C or the names it uses changed since its last check"),
                     _ => None,
                 };
                 if let Some(why) = why {
@@ -1493,11 +1624,12 @@ impl Replacement {
 /// last pass's commit and the first failing case's first difference
 /// (port next's Fix).
 pub fn regressed(root: &Path) -> Vec<(String, Option<String>, String)> {
+    let names = psx_symbols::names::load(root);
     let log = std::fs::read_to_string(root.join(CHECKS).join("checks.jsonl")).unwrap_or_default();
     let lines: Vec<Value> = log.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
     let mut out = Vec::new();
     for (f, _, _) in c_functions(root) {
-        let Some(k) = last_check(root, &f) else { continue };
+        let Some(k) = last_check_in(root, &names, &f) else { continue };
         if k["status"] != "failed" {
             continue;
         }
@@ -1548,17 +1680,12 @@ pub fn overview(root: &Path) -> Value {
             }
         }
     }
-    let (now, names_now) = (sources_hash(root), names_hash(root));
-    let read = |p: PathBuf| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let c: Vec<Value> = c_functions(root)
         .into_iter()
         .map(|(name, file, line)| {
             let mut v = json!({"name": name, "file": format!("decomp/{file}"), "line": line,
                 "names": addr(&name), "off": off.get(&name)});
-            if let Some(mut k) = read(check_file(root, &name)) {
-                k["stale"] = json!(
-                    k["sources"].as_str() != Some(now.as_str()) || k["names"].as_str() != Some(names_now.as_str())
-                );
+            if let Some(k) = last_check_in(root, &names, &name) {
                 v["check"] = k;
             }
             v
@@ -1718,7 +1845,7 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         );
         // A check kept on this C passes until the C changes.
         assert_eq!(counts(&root)["passing"], 0);
-        save_check(&root, "helper", &json!({}), &json!({"status": "passed", "passed": 3, "failed": 0}));
+        save_check(&root, &Names::default(), "helper", &json!({}), &json!({"status": "passed", "passed": 3, "failed": 0}));
         assert_eq!(counts(&root), json!({"named": 0, "in_c": 2, "passing": 1}));
         assert_eq!(last_check(&root, "helper").unwrap()["stale"], false);
         let h = sources_hash(&root);
@@ -1739,6 +1866,44 @@ static int helper(int x)\n{\n    return x + 1;\n}\n\nvoid world_collide(Actor *a
         let names = psx_symbols::names::load(&dir);
         assert!(names.problems.is_empty(), "{:?}", names.problems);
         (dir, names)
+    }
+
+    /// A check goes stale with its own C, its callees' C, decomp/'s headers
+    /// and the names it reaches, and with nothing else.
+    #[test]
+    fn a_check_goes_stale_with_what_it_depends_on() {
+        let (root, _) = names(NAMES);
+        std::fs::create_dir_all(root.join("decomp")).unwrap();
+        let w = |f: &str, t: &str| std::fs::write(root.join(f), t).unwrap();
+        w("decomp/twice.c", "#include \"names.h\"\nint twice(int a) {\n  return add(a, a) + player.x;\n}\n");
+        w("decomp/add.c", "#include \"names.h\"\nint add(int a, int b) {\n  return a + b;\n}\n");
+        w("decomp/other.c", "#include \"names.h\"\nvoid helper(int n) {\n  counter = n;\n}\n");
+        let key = |f: &str| check_key(&root, &psx_symbols::names::load(&root), f);
+        let (twice, other) = (key("twice"), key("helper"));
+        let same = |what: &str, before: &(String, String), f: &str, stale: bool| {
+            assert_eq!(*before != key(f), stale, "{what}: {f}");
+        };
+
+        w("decomp/other.c", "#include \"names.h\"\nvoid helper(int n) {\n  counter = n + 1;\n}\n");
+        same("another function's C", &twice, "twice", false);
+        same("its own C", &other, "helper", true);
+        let other = key("helper");
+
+        w("decomp/add.c", "#include \"names.h\"\nint add(int a, int b) {\n  return b + a;\n}\n");
+        same("a callee's C", &twice, "twice", true);
+        same("another's callee", &other, "helper", false);
+        let twice = key("twice");
+
+        w("names/a.names", &format!("{NAMES}global 0x80030000 int unused\n"));
+        same("a name it does not use", &twice, "twice", false);
+        w("names/a.names", &NAMES.replace("0x4 int x", "0x8 int x"));
+        same("a field of a struct it reads", &twice, "twice", true);
+        same("a struct it does not read", &other, "helper", false);
+        let twice = key("twice");
+
+        w("decomp/util.h", "#define TWO 2\n");
+        same("a header", &twice, "twice", true);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     const NAMES: &str = "struct Object 0x20 {\n  0x0 u16 kind\n  0x4 int x\n  0xA i16 odd\n  0x10 Object *next\n  0x14 u8 flags[4]\n}\nglobal 0x80020000 int counter\nglobal 0x80020100 Object player\nfunction 0x80010200 void helper(int n)\nfunction 0x80010100 int twice(int a)\n";

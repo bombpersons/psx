@@ -117,8 +117,10 @@ bytes above sp, where a function may store its argument registers, are
 its own.
 branch_ways lists the original's branch ways no case took. A failed
 case is saved as a state (.psx/decomp/cases/); code_check from it
-reruns that call. With no function, code_check checks each function of
-decomp/ whose C or names changed since its last check. Compiler errors
+reruns that call. A check holds until its function's C changes, or the
+C of the decomp/ functions it calls, decomp/'s headers or the names that
+C uses; with no function, code_check checks each function whose check no
+longer holds. Compiler errors
 come back by file and line.
 
 decomp= on run, scenario_check and port_check runs the game with the C in
