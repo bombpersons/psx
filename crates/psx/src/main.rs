@@ -50,6 +50,7 @@ mod run;
 mod run_native;
 mod scenario;
 mod script_cover;
+mod session;
 mod stall;
 mod stamp;
 mod states;

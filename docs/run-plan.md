@@ -178,6 +178,15 @@ step that keeps a state at field N becomes a step of N fields, and
 
    *Done when* run's tests pass and the reports of a set of
    runs (one per observer) equal today's, apart from run_dir and wall_ms.
+
+   *Done (2026-11-07).* `session.rs` (Session, Observer, Driver, one
+   `advance`) and `run_native/observe.rs` (the events driver and fourteen
+   observers); run is start, attach, advance, finish. Reports and every
+   run file are byte-identical to the old binary's on 25 Croc runs (one or
+   more per observer, plus errors) and six GT2 runs from its call log.
+   `RunCmdArgs::check` refuses over MCP what clap refuses on the command
+   line; three of those GT2 runs passed watch_after without diagnose and
+   are now refused instead of ignored.
 2. **Adjustments and recordings.** Running in the session; a recording
    as a start and its ticks as a driver; latch and fix refused only
    without one. This is the probes plan's step 3.

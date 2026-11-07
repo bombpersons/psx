@@ -171,7 +171,28 @@ pub(crate) fn named_state(states: &std::path::Path, p: PathBuf) -> PathBuf {
 }
 
 impl RunCmdArgs {
+    /// The combinations clap refuses on the command line, refused the same
+    /// way for MCP and for runs made from JSON (chains, recipes), which
+    /// clap never sees.
+    fn check(&self) -> crate::Result<()> {
+        let needs = |given: bool, name: &str, other: &str, has: bool| match given && !has {
+            true => Err(Error::invalid(format!("{name} needs {other}"))),
+            false => Ok(()),
+        };
+        if self.input.is_some() && self.replay.is_some() {
+            return Err(Error::invalid("input and replay are two ways to give the pad: pass one"));
+        }
+        needs(self.description.is_some(), "description", "save_as", self.save_as.is_some())?;
+        needs(self.replace, "replace", "save_as", self.save_as.is_some())?;
+        needs(self.brk.is_some(), "break", "diagnose", self.diagnose)?;
+        needs(self.tail.is_some(), "tail", "diagnose", self.diagnose)?;
+        needs(self.max_steps.is_some(), "max_steps", "diagnose", self.diagnose)?;
+        needs(self.watch_after.is_some(), "watch_after", "diagnose", self.diagnose)?;
+        needs(self.trace.gpu_draw_filter.is_some(), "gpu_draw_filter", "gpu_next_draw", self.trace.gpu_next_draw)
+    }
+
     pub(crate) fn run(self, ctx: &Ctx) -> crate::Result<(bool, Value)> {
+        self.check()?;
         let mut a = self;
         let dirs = crate::states::Dirs::default();
         let (states, chains) = dirs.get(ctx);
@@ -744,6 +765,20 @@ pub(crate) fn summary(v: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_arguments_are_refused_as_the_command_line_refuses_them() {
+        let args = |v: Value| serde_json::from_value::<RunCmdArgs>(v).unwrap();
+        // Over MCP, watch_after without diagnose was once ignored without a word.
+        let e = args(json!({"frames": 10, "watch_after": 118})).check().unwrap_err();
+        assert!(e.to_string().contains("watch_after needs diagnose"), "{e}");
+        let e = args(json!({"input": [], "replay": "r.json"})).check().unwrap_err();
+        assert!(e.to_string().contains("pass one"), "{e}");
+        assert!(args(json!({"replace": true})).check().is_err());
+        assert!(args(json!({"gpu_draw_filter": "textured"})).check().is_err());
+        assert!(args(json!({"frames": 10, "diagnose": true, "watch_after": 5})).check().is_ok());
+        assert!(args(json!({"save_as": "x", "description": "d", "replace": true})).check().is_ok());
+    }
 
     #[test]
     fn a_summary_says_whether_the_trace_files_are_whole() {
