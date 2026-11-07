@@ -2,8 +2,10 @@
 //! each `catalogue/F-*.md` entry's questions go to `catalogue/questions.md`,
 //! its wont_reach to `catalogue/wont_reach.toml`, its assets to the
 //! scenarios its recordings are of, and its held-out recordings the person
-//! played to goal.toml's `held_out`; the agent's own become work. goal.toml
-//! loses `features`, and the entries and `.psx/goal_recordings.json` go.
+//! played to goal.toml's `held_out`; the agent's own become work. The
+//! script stretches its code cited that the port's code does not go to
+//! `game/script_stretches.md`, so they stay cited. goal.toml loses
+//! `features`, and the entries and `.psx/goal_recordings.json` go.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -13,6 +15,10 @@ use serde_json::{Value, json};
 
 use super::{CATALOGUE, Confirmed, GOAL, Goal, QUESTIONS, SCENARIOS, WONT_REACH};
 use crate::Error;
+use crate::script_cover::Stretch;
+
+/// Where the script stretches the entries cited go.
+const STRETCHES: &str = "game/script_stretches.md";
 
 /// The ledger of recordings features named, from before.
 const GOAL_RECORDINGS: &str = ".psx/goal_recordings.json";
@@ -20,6 +26,8 @@ const GOAL_RECORDINGS: &str = ".psx/goal_recordings.json";
 /// A feature's entry as it was: only what moves is read.
 #[derive(Debug, Default, Deserialize)]
 struct Entry {
+    #[serde(default)]
+    code: Vec<String>,
     #[serde(default)]
     recordings: Recordings,
     #[serde(default)]
@@ -165,6 +173,16 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
         }
     }
     assets.retain(|_, n| !n.is_empty());
+    // Script stretches the entries cited and the port's code does not:
+    // only the entries said the port follows them.
+    let cited = super::Cited::read(root);
+    let mut stretches: Vec<String> = Vec::new();
+    for c in entries.iter().flat_map(|(_, e)| &e.code) {
+        let Some(s) = Stretch::parse(c) else { continue };
+        if !cited.stretches.iter().any(|x| x.contains(&s)) && !stretches.contains(c) {
+            stretches.push(c.clone());
+        }
+    }
     let out = json!({
         "entries_removed": files,
         "outside_the_goal": outside,
@@ -173,6 +191,7 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
         "scenario_assets": assets,
         "held_out": held_out,
         "held_out_to_work": to_work,
+        "script_stretches": stretches,
     });
     if dry_run {
         return Ok(out);
@@ -234,6 +253,17 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
         }
         write(root, QUESTIONS, &t)?;
     }
+    if !stretches.is_empty() {
+        let mut t = String::from(
+            "# Script stretches the port follows\n\nThe catalogue's feature entries cited these; psx port update kept them here\nso they stay cited. Cite each where the port's code follows it and take it\nout of this list.\n\n",
+        );
+        for s in &stretches {
+            t += &format!("- {s}\n");
+        }
+        let dir = root.join("game");
+        std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        write(root, STRETCHES, &t)?;
+    }
     write(root, GOAL, &text)?;
     // The READMEs init wrote, where they still tell of features.
     if read(root, "catalogue/README.md")?.is_some_and(|t| t.contains("F-0001.md")) {
@@ -262,7 +292,7 @@ mod tests {
 
     #[test]
     fn a_workspace_with_features_moves_to_the_goals_recordings() {
-        let entry = "+++\nid = \"F-0001\"\ntitle = \"Walk\"\narea = \"a\"\ncode = [\"0x80010000\"]\nassets = [\"/CROC.WAD\"]\nquestions = [\"what is the slope limit?\"]\n[recordings]\nwork = [\"walk/a\"]\nheld_out = [\"walk/b\", \"walk/c\", \"walk/d\"]\n[wont_reach]\n\"0x80010010\" = \"debug only\"\n+++\nWalking.\n";
+        let entry = "+++\nid = \"F-0001\"\ntitle = \"Walk\"\narea = \"a\"\ncode = [\"0x80010000\", \"croc+0x10..0x20\"]\nassets = [\"/CROC.WAD\"]\nquestions = [\"what is the slope limit?\"]\n[recordings]\nwork = [\"walk/a\"]\nheld_out = [\"walk/b\", \"walk/c\", \"walk/d\"]\n[wont_reach]\n\"0x80010010\" = \"debug only\"\n\"croc+0x18\" = \"never\"\n+++\nWalking.\n";
         let goal = "# The goal, as features.\ndescription = \"walk\"\nfeatures = [\n  \"F-0001\",\n]\nconfirmed = { at = \"t\", features = [\"F-0001\"], held_out = [\"walk/c\"], wont_reach = { \"F-0001\" = { \"0x80010010\" = \"debug only\" } } }\n";
         let (d, _) = workspace(
             goal,
@@ -289,6 +319,9 @@ mod tests {
         assert_eq!(port.recordings.held_out, ["walk/c", "walk/d"]);
         assert_eq!(port.questions, ["what is the slope limit?"]);
         assert_eq!(port.wont_reach["0x80010010"], "debug only");
+        // The entry's script stretch is still cited, so its position is fine.
+        assert_eq!(out["script_stretches"], json!(["croc+0x10..0x20"]));
+        assert!(std::fs::read_to_string(d.0.join(STRETCHES)).unwrap().contains("- croc+0x10..0x20\n"));
         assert!(port.wont_reach_agreed("0x80010010", "debug only"));
         assert_eq!(port.scenario_assets["walk"], ["/CROC.WAD"]);
         assert!(matches!(port.confirmation(), super::super::Confirmation::Covers { .. }));

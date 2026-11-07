@@ -720,7 +720,9 @@ moves a workspace (port/migrate.rs): only the goal's entries move; the
 person's plays (goal and confirmed held_out, play requests,
 .psx/goal_recordings.json) go to held_out, the agent's other held-out
 recordings to work; wont_reach and questions to their files, assets to
-the scenarios; the entries, the ledger and an entry outside the goal
+the scenarios, the script stretches the entries' code cited and the
+port's code does not to game/script_stretches.md (external croc's
+won't-reach script positions were otherwise in no cited stretch); the entries, the ledger and an entry outside the goal
 deleted; the confirmation rewritten, and goal.toml's opening comment
 and catalogue/README.md replaced where they tell of features. The C
 example lost its entry. The Croc example, moved and checked at e41f454,
