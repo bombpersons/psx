@@ -486,16 +486,36 @@ impl Fmt {
 /// One `--sample ADDR:FMT[:NAME]` column.
 #[derive(Clone, Debug)]
 pub struct Sample {
+    /// Where it reads; 0 for a names path through a pointer (`path` says
+    /// where it leads now).
     pub addr: u32,
     pub fmt: Fmt,
     pub name: String,
     pub mem: Mem,
+    /// A names path (`car_0->speed`), when given as one.
+    pub path: Option<std::sync::Arc<crate::names_bind::NamePath>>,
+}
+
+/// The word at `addr` in main RAM or the scratchpad.
+pub fn word_at(ram: &[u8], scratch: &[u8], addr: u32) -> Option<u32> {
+    locate(addr, 4).map(|m| read_mem(ram, scratch, m, 4))
 }
 
 impl Sample {
+    /// Where it reads now: none where a path's pointer leads outside memory.
+    pub fn at(&self, ram: &[u8], scratch: &[u8]) -> Option<(u32, Mem)> {
+        match &self.path {
+            Some(p) if p.derefs => {
+                let (addr, _) = p.resolve(&|a| word_at(ram, scratch, a)).ok()??;
+                Some((addr, locate(addr, self.fmt.width())?))
+            }
+            _ => Some((self.addr, self.mem)),
+        }
+    }
+
     /// The value now (a bit field's bits alone).
     pub fn read(&self, ram: &[u8], scratch: &[u8]) -> Option<Val> {
-        let m = self.mem;
+        let (_, m) = self.at(ram, scratch)?;
         Some(match self.fmt {
             Fmt::Str(n) => Val::Bytes(mem_bytes(ram, scratch, m, n as usize).to_vec()),
             f => Val::Num(f.take(read_mem(ram, scratch, m, f.width()))),
@@ -510,25 +530,80 @@ impl Sample {
 
 pub fn parse_sample(s: &str) -> Result<Sample, String> {
     let mut it = s.splitn(3, ':');
-    let (a, f, n) = (it.next().unwrap_or(""), it.next().unwrap_or("u32"), it.next());
+    let (a, f, n) = (it.next().unwrap_or(""), it.next(), it.next());
     sample(a, f, n, &format!("{s:?}"))
 }
 
 /// Shared by the `ADDR:FMT[:NAME]` text and typed forms. A bare byte width
-/// (1, 2, 4, as in watches) reads unsigned.
-fn sample(a: &str, f: &str, name: Option<&str>, label: &str) -> Result<Sample, String> {
-    let addr = crate::names_bind::address(a).map_err(|e| format!("{label}: {e}"))?;
-    sample_at(addr, f, name, label)
+/// (1, 2, 4, as in watches) reads unsigned. The format defaults to u32, or
+/// for a names path to its type's.
+pub fn sample(a: &str, f: Option<&str>, name: Option<&str>, label: &str) -> Result<Sample, String> {
+    let f = f.filter(|f| !f.trim().is_empty());
+    let Some(path) = crate::names_bind::NamePath::parse(a) else {
+        let addr = crate::names_bind::address(a).map_err(|e| format!("{label}: {e}"))?;
+        return sample_at(addr, f.unwrap_or("u32"), name, label);
+    };
+    let path = path.map_err(|e| format!("{label}: {e}"))?;
+    let fmt = match f {
+        Some(f) => fmt_named(f, label)?,
+        None => type_format(&path).ok_or_else(|| {
+            format!(
+                "{label}: {} has no format of its own (a struct or array): give one, e.g. {}:x32",
+                path.text, path.text
+            )
+        })?,
+    };
+    let (addr, mem) = match path.fixed() {
+        Some(a) => {
+            (a, locate(a, fmt.width()).ok_or_else(|| format!("{label}: 0x{a:08X} is not main RAM or scratchpad"))?)
+        }
+        None => (0, Mem::Ram(0)),
+    };
+    let name = name.filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| path.text.clone());
+    if name.contains([',', '"', '\n']) {
+        return Err(format!("{label}: names cannot contain commas or quotes"));
+    }
+    Ok(Sample { addr, fmt, name, mem, path: Some(std::sync::Arc::new(path)) })
+}
+
+/// The format a names type reads as by default: its number, a pointer or
+/// float as hex, a char array as a byte string; none for a struct.
+fn type_format(p: &crate::names_bind::NamePath) -> Option<Fmt> {
+    use psx_symbols::names::Type;
+    if p.leaf_is_enum() {
+        return Some(Fmt::Unsigned(p.size().filter(|s| [1, 2, 4].contains(s))? as u8));
+    }
+    Some(match p.plain_leaf() {
+        Type::Pointer { .. } => Fmt::Hex(4),
+        Type::Array { of, len } if matches!(&*of, Type::Named { name } if name == "char") => {
+            Fmt::Str(u8::try_from(len).ok().filter(|&n| n > 0)?)
+        }
+        Type::Named { name } => match name.as_str() {
+            "char" | "i8" | "s8" => Fmt::Signed(1),
+            "u8" | "byte" | "uchar" | "u_char" | "bool" | "undefined" | "undefined1" => Fmt::Unsigned(1),
+            "i16" | "s16" | "short" => Fmt::Signed(2),
+            "u16" | "ushort" | "u_short" | "undefined2" => Fmt::Unsigned(2),
+            "i32" | "s32" | "int" | "long" => Fmt::Signed(4),
+            "u32" | "uint" | "u_int" | "ulong" | "u_long" | "undefined4" => Fmt::Unsigned(4),
+            "float" => Fmt::Hex(4),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+fn fmt_named(f: &str, label: &str) -> Result<Fmt, String> {
+    match f.trim() {
+        "1" => Ok(Fmt::Unsigned(1)),
+        "2" => Ok(Fmt::Unsigned(2)),
+        "4" => Ok(Fmt::Unsigned(4)),
+        f => Fmt::parse(f).ok_or_else(|| format!("{label}: unknown format {f:?} (u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F, e.g. fx16.16 or fx4.12, bits of a word as u16[14] or u8[4..7], a byte string as strN, e.g. str32, or a width 1/2/4)")),
+    }
 }
 
 /// A column at `addr` read as format `f` (or a bare width 1/2/4, unsigned).
 pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<Sample, String> {
-    let fmt = match f.trim() {
-        "1" => Fmt::Unsigned(1),
-        "2" => Fmt::Unsigned(2),
-        "4" => Fmt::Unsigned(4),
-        f => Fmt::parse(f).ok_or_else(|| format!("{label}: unknown format {f:?} (u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F, e.g. fx16.16 or fx4.12, bits of a word as u16[14] or u8[4..7], a byte string as strN, e.g. str32, or a width 1/2/4)"))?,
-    };
+    let fmt = fmt_named(f, label)?;
     let mem =
         locate(addr, fmt.width()).ok_or_else(|| format!("{label}: 0x{addr:08X} is not main RAM or scratchpad"))?;
     let name =
@@ -536,7 +611,7 @@ pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<
     if name.contains([',', '"', '\n']) {
         return Err(format!("{label}: names cannot contain commas or quotes"));
     }
-    Ok(Sample { addr, fmt, name, mem })
+    Ok(Sample { addr, fmt, name, mem, path: None })
 }
 
 /// A `sample` column as given: `ADDR:FMT[:NAME]` text, or over MCP/JSON a
@@ -594,8 +669,8 @@ impl std::str::FromStr for SampleSpec {
     }
 }
 
-/// A `samples.csv` column: memory, or a name the glossary's binding gives
-/// (a quantity of the glossary, or else one of its probes).
+/// A `samples.csv` column: memory, or a quantity of the glossary, read
+/// through its binding.
 #[derive(Clone, Debug)]
 pub enum Column {
     Memory(Sample),
@@ -617,6 +692,42 @@ fn is_quantity(s: &str) -> bool {
     psx_scenario::value::is_name(s) && !s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// The columns with the glossary they read, where `need` (rows per tick)
+/// or a bare name asks for it. A bare name is the glossary's quantity, or
+/// else a global of names/ with a type, which needs no glossary.
+pub fn with_glossary(
+    mut cols: Vec<Column>,
+    need: bool,
+    load: impl FnOnce() -> crate::Result<Quantities>,
+) -> crate::Result<(Vec<Column>, Option<Quantities>)> {
+    let bare = |c: &Column| match c {
+        Column::Quantity(n) => Some(n.clone()),
+        Column::Memory(_) => None,
+    };
+    if !need && !cols.iter().any(|c| bare(c).is_some()) {
+        return Ok((cols, None));
+    }
+    let q = match load() {
+        Ok(q) => Some(q),
+        Err(e) if need => return Err(e),
+        Err(e) => {
+            // Without a glossary every bare name has to be a global.
+            if cols.iter().filter_map(bare).any(|n| !matches!(crate::names_bind::NamePath::parse(&n), Some(Ok(_)))) {
+                return Err(e);
+            }
+            None
+        }
+    };
+    for c in &mut cols {
+        let Some(n) = bare(c).filter(|n| !q.as_ref().is_some_and(|q| q.is_quantity(n))) else { continue };
+        if matches!(crate::names_bind::NamePath::parse(&n), Some(Ok(_))) {
+            *c = Column::Memory(sample(&n, None, None, &format!("sample {n:?}")).map_err(crate::Error::invalid)?);
+        }
+    }
+    let q = q.filter(|_| need || cols.iter().any(|c| bare(c).is_some()));
+    Ok((cols, q))
+}
+
 impl SampleSpec {
     pub fn parse(&self) -> Result<Column, String> {
         match self {
@@ -628,12 +739,9 @@ impl SampleSpec {
     fn memory(&self) -> Result<Sample, String> {
         match self {
             SampleSpec::Text(s) => parse_sample(s).map_err(|e| format!("--sample {e}")),
-            SampleSpec::Typed(t) => sample(
-                &t.addr,
-                t.format.as_deref().unwrap_or("u32"),
-                t.name.as_deref(),
-                &format!("sample {:?}", t.addr),
-            ),
+            SampleSpec::Typed(t) => {
+                sample(&t.addr, t.format.as_deref(), t.name.as_deref(), &format!("sample {:?}", t.addr))
+            }
         }
     }
 }
@@ -665,14 +773,12 @@ pub enum SamplePer {
     Tick,
 }
 
-/// The glossary's binding, which reads the quantity and probe columns.
+/// The glossary's binding, which reads the quantity columns.
 pub struct Quantities {
     pub binding: crate::binding::Plugin<crate::scenario::Described>,
     pub types: std::collections::BTreeMap<String, psx_scenario::Type>,
     pub refusals: Vec<Value>,
     pub refusal_count: u64,
-    /// The names the binding gave as probes in any row.
-    pub probes_given: std::collections::BTreeSet<String>,
 }
 
 impl Quantities {
@@ -680,10 +786,10 @@ impl Quantities {
         binding: crate::binding::Plugin<crate::scenario::Described>,
         types: std::collections::BTreeMap<String, psx_scenario::Type>,
     ) -> Quantities {
-        Quantities { binding, types, refusals: Vec::new(), refusal_count: 0, probes_given: Default::default() }
+        Quantities { binding, types, refusals: Vec::new(), refusal_count: 0 }
     }
 
-    /// Whether `name` is a glossary quantity; any other name is a probe.
+    /// Whether `name` is a glossary quantity.
     pub fn is_quantity(&self, name: &str) -> bool {
         self.types.contains_key(name)
     }
@@ -740,18 +846,8 @@ impl Sampler {
 
     fn row(&mut self, mut line: String, m: &psx_core::Machine) {
         self.rows += 1;
-        let named = |q: &Quantities, quantity: bool| {
-            self.columns.iter().any(|c| matches!(c, Column::Quantity(n) if q.is_quantity(n) == quantity))
-        };
-        let (mut values, mut probes) = (None, None);
-        if let Some(q) = self.quantities.as_mut() {
-            if named(q, true) {
-                values = q.read(m, self.rows);
-            }
-            if named(q, false) {
-                probes = q.probes(m, self.rows);
-            }
-        }
+        let values = self.quantities.as_mut().filter(|_| self.columns.iter().any(|c| matches!(c, Column::Quantity(_))));
+        let values = values.and_then(|q| q.read(m, self.rows));
         for c in &self.columns {
             line.push(',');
             match c {
@@ -765,12 +861,7 @@ impl Sampler {
                     Some(psx_scenario::Value::Int(i)) => line += &i.to_string(),
                     Some(psx_scenario::Value::Variant(v)) => line += v,
                     // Tables, lists and records are not quantities.
-                    Some(_) => {}
-                    None => {
-                        if let Some(v) = probes.as_ref().and_then(|p| p.get(n)) {
-                            line += &probe_cell(v);
-                        }
-                    }
+                    Some(_) | None => {}
                 },
             }
         }
@@ -779,33 +870,7 @@ impl Sampler {
     }
 }
 
-/// A probe's cell: its value, a list's values joined by `;`.
-fn probe_cell(v: &Value) -> String {
-    match v {
-        Value::Array(a) => a.iter().map(probe_cell).collect::<Vec<_>>().join(";"),
-        Value::String(s) => s.clone(),
-        v => v.to_string(),
-    }
-}
-
 impl Quantities {
-    /// The probes now, or none when the binding refused (row `row`).
-    fn probes(&mut self, m: &psx_core::Machine, row: u64) -> Option<serde_json::Map<String, Value>> {
-        match self.binding.probes(m) {
-            Ok(p) => {
-                self.probes_given.extend(p.keys().cloned());
-                Some(p)
-            }
-            Err(e) => {
-                self.refusal_count += 1;
-                if self.refusals.len() < MAX_REFUSALS {
-                    self.refusals.push(json!({"row": row, "probes": true, "problem": e}));
-                }
-                None
-            }
-        }
-    }
-
     /// The quantities now, or none when the binding refused (row `row`).
     fn read(&mut self, m: &psx_core::Machine, row: u64) -> Option<psx_scenario::Values> {
         let problems = match self.binding.call(psx_capture::abi::QUANTITIES, m) {
@@ -885,7 +950,7 @@ pub fn parse_poke(s: &str) -> Result<Poke, String> {
     };
     let mem =
         locate(addr, fmt.width()).ok_or_else(|| format!("poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
-    let at = Sample { addr, fmt, name: a.trim().to_string(), mem };
+    let at = Sample { addr, fmt, name: a.trim().to_string(), mem, path: None };
     let value = at.fmt.given(val).ok_or_else(|| match at.fmt {
         Fmt::Str(n) => format!(
             "poke {s:?}: bad value {val:?} (a byte string of at most {n} bytes: printable ASCII, \\xNN for any byte)"
@@ -1373,7 +1438,7 @@ mod tests {
         assert_eq!(s.out, "run_frame,frame,name\n0,0,car\\x00\\x12\n");
         assert!(parse_poke("80010010=a name too long:str8").unwrap_err().contains("at most 8 bytes"));
         assert!(parse_poke("1F000000=1").is_err());
-        assert!(parse_poke("lara.x=1").unwrap_err().contains("neither a hex address nor a name"));
+        assert!(parse_poke("lara.x=1").unwrap_err().contains("neither a hex address nor a"));
     }
 
     #[test]
@@ -1407,7 +1472,8 @@ mod tests {
 
     #[test]
     fn read_watch_ranges_fold_mirrors() {
-        use crate::run::{fold, parse_range_spec};
+        use crate::run::fold;
+        let parse_range_spec = |s| crate::run::parse_range_at(s, None);
         assert_eq!(parse_range_spec("800751CC:4"), Ok((0x751CC, 0x751D0)));
         assert_eq!(parse_range_spec("0x80100000-80100400"), Ok((0x10_0000, 0x10_0400)));
         assert_eq!(parse_range_spec("A0100000"), Ok((0x10_0000, 0x10_0004)));

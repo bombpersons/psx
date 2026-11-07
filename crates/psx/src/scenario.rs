@@ -2003,13 +2003,6 @@ pub struct Quantities {
         fn quantities(&self, m: &psx_capture::Machine) -> Q {
             Q { x: m.i32(0x8002_0000), dead: m.u8(0x8002_0020) != 0 }
         }
-
-        fn probes(&self, m: &psx_capture::Machine, p: &mut psx_capture::Probes) {
-            p.probe("x_twice", m.i32(0x8002_0000) * 2);
-            for i in 0..2u32 {
-                p.probe("bytes", m.u8(0x8002_0000 + i));
-            }
-        }
     }
 
     #[allow(unsafe_code)]
@@ -2416,35 +2409,6 @@ pub struct Quantities {
         assert!(a.get("late_input").is_none(), "{a}");
     }
 
-    /// A binding built before probes: it answers no question past MAP.
-    #[allow(unsafe_code)]
-    unsafe extern "C" fn before_probes_call(what: u32, host: *const psx_capture::abi::Host) -> i32 {
-        if what == psx_capture::abi::PROBES {
-            // SAFETY: the caller's.
-            unsafe { ((*host).out)((*host).ctx, b"".as_ptr(), 0) };
-            return psx_capture::abi::UNKNOWN;
-        }
-        // SAFETY: the caller's.
-        unsafe { psx_capture::abi::call(&Demo, what, host) }
-    }
-
-    /// The binding's probes are read from the machine as it is, a repeated
-    /// name as a list; a binding built before probes has none.
-    #[test]
-    fn a_binding_gives_its_probes() {
-        let mut m = Machine::new(vec![0; 0x8_0000]);
-        m.bus.ram[0x2_0000..][..4].copy_from_slice(&0x0102i32.to_le_bytes());
-        let b: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
-        assert_eq!(
-            serde_json::Value::Object(b.probes(&m).unwrap()),
-            serde_json::json!({"x_twice": 0x204, "bytes": [2, 1]})
-        );
-        let before: Plugin<Described> = Plugin::new(before_probes_call, None).unwrap();
-        assert!(before.probes(&m).unwrap().is_empty());
-        let none: Plugin<Described> = Plugin::new(two_reads_call, None).unwrap();
-        assert!(none.probes(&m).unwrap().is_empty());
-    }
-
     /// A loop for Demo's binding that counts x up a tick at a time from
     /// what RAM holds (a `nop` after the load, so the count reads it),
     /// recorded with `adjust`.
@@ -2730,44 +2694,6 @@ pub struct Quantities {
         }
         assert_eq!(s.out, "run_frame,frame,tick,x,x_in_ram,dead\n0,0,2,2,2,false\n0,0,4,4,4,false\n0,0,6,6,6,false\n");
         assert_eq!(s.quantities.unwrap().refusal_count, 0);
-    }
-
-    /// A name the glossary does not have is one of the binding's probes,
-    /// sampled per tick beside the quantities; a list's values are joined
-    /// by `;`, and a name the binding never gives stays empty.
-    #[test]
-    fn run_samples_probes_beside_quantities() {
-        use crate::ram::{Column, Quantities, SamplePer, Sampler};
-        let binding: Plugin<Described> = Plugin::new(demo_call, None).unwrap();
-        let tick = binding.described().tick.clone();
-        let types: BTreeMap<String, Type> =
-            [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
-        let mut m = Machine::new(vec![0; 0x8_0000]);
-        #[rustfmt::skip]
-        let loop_ = [
-            0x3C09_8002, // lui t1, 0x8002
-            0x8D28_0000, // lw t0, 0(t1)
-            0x2508_0001, // addiu t0, t0, 1
-            0xAD28_0000, // sw t0, 0(t1): x
-            0xAD28_0010, // sw t0, 0x10(t1): the tick ends
-            0x0800_4000, // j 0x80010000
-            0x0000_0000, // nop
-        ];
-        for (i, w) in loop_.iter().enumerate() {
-            m.bus.ram[0x1_0000 + 4 * i..][..4].copy_from_slice(&u32::to_le_bytes(*w));
-        }
-        m.cpu.set_pc(0x8001_0000);
-        let cols = ["x", "x_twice", "bytes", "nope"].map(|n| Column::Quantity(n.into())).to_vec();
-        let mut s = Sampler::new(cols, 1, SamplePer::Tick, Some(Quantities::new(binding, types)));
-        while s.ticks < 2 {
-            if tick.ended_by(&m.step()) {
-                s.tick(0, &m);
-            }
-        }
-        assert_eq!(s.out, "run_frame,frame,tick,x,x_twice,bytes,nope\n0,0,1,1,2,1;0,\n0,0,2,2,4,2;0,\n");
-        let q = s.quantities.unwrap();
-        assert_eq!(q.refusal_count, 0);
-        assert_eq!(q.probes_given, ["bytes".to_string(), "x_twice".to_string()].into());
     }
 
     #[test]

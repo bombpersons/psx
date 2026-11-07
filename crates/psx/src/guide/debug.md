@@ -18,7 +18,8 @@ a new stop:
 - pc: the CPU is about to run the instruction at an address or a name
   from names/.
 - write, read: right after a CPU store or load touching `ADDR[:WIDTH]`
-  (4 bytes by default) or `LO-HI`, in hex or names. DMA transfers are
+  (4 bytes, or a names path's size, by default) or `LO-HI`, in hex or
+  names (topic run, Memory formats). DMA transfers are
   not seen.
 - until: a field boundary where conditions hold, as run's until.
 - tick: the binding's tick ends (the glossary's binding for this disc).
@@ -53,8 +54,8 @@ which instruction.
 
 ## Looking and changing
 
-debug_show shows the stop: registers by default; value takes sample's
-formats (`ADDR:FMT[:NAME]`) or glossary quantities and probes by name;
+debug_show shows the stop: registers by default; value takes what
+sample does (`ADDR:FMT[:NAME]`, names paths, quantities by name);
 bytes gives memory as hex; history the instructions go kept; screen a
 PNG; stops every stop and the one the session is at; gpu the latest GPU
 capture (topic assets); hardware the CD controller's recent commands, the

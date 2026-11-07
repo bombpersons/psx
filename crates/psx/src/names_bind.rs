@@ -409,6 +409,15 @@ pub(crate) fn project_names() -> Arc<Names> {
 /// a name is spelled the same and no `0x` is given.
 pub(crate) fn address(spec: &str) -> Result<u32, String> {
     let spec = spec.trim();
+    match NamePath::parse(spec) {
+        Some(Ok(p)) => {
+            return p.fixed().ok_or_else(|| {
+                format!("{spec:?} reads a pointer: give it where memory is read (sample, until, watch, debug)")
+            });
+        }
+        Some(Err(e)) => return Err(e),
+        None => {}
+    }
     let hex = psx_media::memmap::parse_hex(spec);
     let names = project_names();
     if let Some(h) = hex {
@@ -459,6 +468,227 @@ fn find(names: &Names, spec: &str) -> Vec<u32> {
     out.sort_unstable();
     out.dedup();
     out
+}
+
+/// A names path: a global of names/ that has a type, then `.field`,
+/// `->field` and `[N]` steps (`car_0->wheels[2].load`). A step through a
+/// pointer reads the pointer where the path is read.
+#[derive(Clone)]
+pub(crate) struct NamePath {
+    pub text: String,
+    base: u32,
+    ty: psx_symbols::names::Type,
+    steps: Vec<Step>,
+    /// The type it ends at; it does not depend on memory.
+    pub leaf: psx_symbols::names::Type,
+    /// Whether a step reads a pointer.
+    pub derefs: bool,
+    names: Arc<Names>,
+}
+
+impl std::fmt::Debug for NamePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Step {
+    Field(String),
+    Arrow(String),
+    Index(u32),
+}
+
+impl NamePath {
+    /// `spec` as a path, by the project's names: None where it is none (hex,
+    /// a function, `name+OFF`, a global without a type and no steps).
+    pub(crate) fn parse(spec: &str) -> Option<Result<NamePath, String>> {
+        NamePath::parse_in(project_names(), spec)
+    }
+
+    pub(crate) fn parse_in(names: Arc<Names>, spec: &str) -> Option<Result<NamePath, String>> {
+        let text = spec.trim();
+        let (module, body) = match text.rsplit_once(':') {
+            Some((m, b)) => (Some(m), b),
+            None => (None, text),
+        };
+        let end = [body.find('.'), body.find('['), body.find("->")].into_iter().flatten().min().unwrap_or(body.len());
+        let (name, rest) = body.split_at(end);
+        let name = name.trim().trim_end_matches('?');
+        if name.is_empty() || name.contains(['+', '-', ' ']) {
+            return None;
+        }
+        let module_ok =
+            |m: &Option<String>| module.is_none_or(|x| m.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(x)));
+        let globals: Vec<&psx_symbols::names::Global> =
+            names.globals.iter().filter(|g| g.name.text == name && module_ok(&g.module)).collect();
+        let fail = |e: String| Some(Err(format!("{text:?}: {e}")));
+        let g = match globals.as_slice() {
+            [] if rest.is_empty() => return None,
+            [] => return fail(format!("{name} is neither a hex address nor a global of names/")),
+            [g] => g,
+            _ => return fail(format!("{name} is several globals: say which with MODULE:{name}")),
+        };
+        let Some(ty) = g.ty.clone() else {
+            return if rest.is_empty() { None } else { fail(format!("{name} has no type in names/")) };
+        };
+        let steps = match steps(rest) {
+            Ok(s) => s,
+            Err(e) => return fail(e),
+        };
+        let mut path =
+            NamePath { text: text.to_string(), base: g.address, ty: ty.clone(), steps, leaf: ty, derefs: false, names };
+        // Walked once with every pointer at the start of RAM, for the type
+        // it ends at and the steps' errors.
+        let reads = std::cell::Cell::new(0);
+        match path.resolve(&|_| {
+            reads.set(reads.get() + 1);
+            Some(0x8000_0000)
+        }) {
+            Ok(Some((_, leaf))) => {
+                path.leaf = leaf;
+                path.derefs = reads.get() > 0;
+                Some(Ok(path))
+            }
+            Ok(None) => unreachable!("every read answers"),
+            Err(e) => fail(e),
+        }
+    }
+
+    /// Where the path leads now and its type: none where a pointer on the
+    /// way cannot be read or is null.
+    pub(crate) fn resolve(
+        &self,
+        read: &dyn Fn(u32) -> Option<u32>,
+    ) -> Result<Option<(u32, psx_symbols::names::Type)>, String> {
+        use psx_symbols::names::Type;
+        let n = &*self.names;
+        let (mut addr, mut ty) = (self.base, self.ty.clone());
+        let size = |t: &Type| n.size_of(t).ok_or_else(|| format!("the size of {} is not known", type_text(t)));
+        for step in &self.steps {
+            match step {
+                Step::Field(f) => (addr, ty) = field(n, addr, &ty, f)?,
+                Step::Arrow(f) => {
+                    let Type::Pointer { to, offset } = plain(n, &ty) else {
+                        return Err(format!("->{f}: {} is not a pointer", type_text(&ty)));
+                    };
+                    let Some(p) = read(addr).filter(|&p| p != 0) else { return Ok(None) };
+                    (addr, ty) = field(n, p.wrapping_sub(offset), &to, f)?;
+                }
+                &Step::Index(i) => match plain(n, &ty) {
+                    Type::Array { of, len } => {
+                        if i >= len {
+                            return Err(format!("[{i}]: {} has {len}", type_text(&ty)));
+                        }
+                        addr = addr.wrapping_add(i * size(&of)?);
+                        ty = *of;
+                    }
+                    Type::Pointer { to, offset } => {
+                        let Some(p) = read(addr).filter(|&p| p != 0) else { return Ok(None) };
+                        addr = p.wrapping_sub(offset).wrapping_add(i * size(&to)?);
+                        ty = *to;
+                    }
+                    _ => return Err(format!("[{i}]: {} is not an array or a pointer", type_text(&ty))),
+                },
+            }
+        }
+        Ok(Some((addr, ty)))
+    }
+
+    /// The address, for a path that reads no pointer.
+    pub(crate) fn fixed(&self) -> Option<u32> {
+        if self.derefs { None } else { self.resolve(&|_| None).ok().flatten().map(|(a, _)| a) }
+    }
+
+    /// The leaf type's size in bytes, when known.
+    pub(crate) fn size(&self) -> Option<u32> {
+        self.names.size_of(&self.leaf)
+    }
+
+    /// The leaf type with typedefs seen through.
+    pub(crate) fn plain_leaf(&self) -> psx_symbols::names::Type {
+        plain(&self.names, &self.leaf)
+    }
+
+    /// Whether the leaf is an enum (an unsigned number of its size).
+    pub(crate) fn leaf_is_enum(&self) -> bool {
+        use psx_symbols::names::{Type, TypeBody};
+        matches!(plain(&self.names, &self.leaf), Type::Named { name }
+            if matches!(self.names.type_named(&name).map(|t| &t.body), Some(TypeBody::Enum { .. })))
+    }
+}
+
+/// `.a`, `->b` and `[N]` steps.
+fn steps(mut s: &str) -> Result<Vec<Step>, String> {
+    let ident = |s: &str| -> (String, usize) {
+        let n = s.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '?')).unwrap_or(s.len());
+        (s[..n].trim_end_matches('?').to_string(), n)
+    };
+    let mut out = Vec::new();
+    while !s.is_empty() {
+        if let Some(r) = s.strip_prefix("->").or_else(|| s.strip_prefix('.')) {
+            let arrow = s.starts_with("->");
+            let (f, n) = ident(r);
+            if f.is_empty() {
+                return Err(format!("a field's name after {}", if arrow { "->" } else { "." }));
+            }
+            out.push(if arrow { Step::Arrow(f) } else { Step::Field(f) });
+            s = &r[n..];
+        } else if let Some(r) = s.strip_prefix('[') {
+            let (i, r) = r.split_once(']').ok_or("[ without ]")?;
+            out.push(Step::Index(parse_offset(i.trim()).ok_or_else(|| format!("[{i}]: an index, decimal or 0x hex"))?));
+            s = r;
+        } else {
+            return Err(format!("{s:?}: steps are .field, ->field and [N]"));
+        }
+    }
+    Ok(out)
+}
+
+/// `ty` with typedefs seen through.
+fn plain(n: &Names, ty: &psx_symbols::names::Type) -> psx_symbols::names::Type {
+    use psx_symbols::names::{Type, TypeBody};
+    let mut ty = ty.clone();
+    for _ in 0..16 {
+        let Type::Named { name } = &ty else { break };
+        match n.type_named(name).map(|t| &t.body) {
+            Some(TypeBody::Typedef { ty: t }) => ty = t.clone(),
+            _ => break,
+        }
+    }
+    ty
+}
+
+/// The field `f` of a struct or union at `addr`.
+fn field(
+    n: &Names,
+    addr: u32,
+    ty: &psx_symbols::names::Type,
+    f: &str,
+) -> Result<(u32, psx_symbols::names::Type), String> {
+    use psx_symbols::names::{Type, TypeBody};
+    let fields = match plain(n, ty) {
+        Type::Named { name } => match n.type_named(&name).map(|t| &t.body) {
+            Some(TypeBody::Struct { fields } | TypeBody::Union { fields }) => fields.clone(),
+            _ => return Err(format!(".{f}: {name} is not a struct or union")),
+        },
+        t => return Err(format!(".{f}: {} is not a struct or union", type_text(&t))),
+    };
+    let found = fields.iter().find(|x| x.name.text == f).ok_or_else(|| {
+        let known: Vec<&str> = fields.iter().map(|x| x.name.text.as_str()).collect();
+        format!("{} has no field {f} (it has {})", type_text(ty), known.join(", "))
+    })?;
+    Ok((addr.wrapping_add(found.offset), found.ty.clone()))
+}
+
+fn type_text(ty: &psx_symbols::names::Type) -> String {
+    use psx_symbols::names::Type;
+    match ty {
+        Type::Named { name } => name.clone(),
+        Type::Pointer { to, .. } => format!("{} *", type_text(to)),
+        Type::Array { of, len } => format!("{}[{len}]", type_text(of)),
+        Type::Function(_) => "a function".into(),
+    }
 }
 
 /// The global holding `addr`, as `name` or `name+0xOFF` within its type's size.
@@ -646,5 +876,32 @@ mod tests {
         // An untyped global covers its first byte.
         assert_eq!(global_at(&n, 0x8007_5010).as_deref(), Some("STEP"));
         assert_eq!(global_at(&n, 0x8007_5011), None);
+    }
+
+    #[test]
+    fn a_names_path_follows_fields_indexes_and_pointers() {
+        let n = Arc::new(names(
+            "struct Wheel {\n 0x0 i16 load\n 0x2 u8 grip\n}\nstruct Car {\n 0x4 Wheel wheels[4]\n 0x14 Car *next\n}\n\
+             global 0x80070000 Car car\nglobal 0x80070100 Car *car_ptr\nglobal 0x80070200 STEP\n",
+        ));
+        let path = |s: &str| NamePath::parse_in(n.clone(), s);
+        let p = path("car.wheels[2].grip").unwrap().unwrap();
+        assert_eq!((p.fixed(), p.derefs, p.size()), (Some(0x8007_000C), false, Some(1)));
+        let mem: HashMap<u32, u32> = [(0x8007_0100, 0x8008_0000), (0x8008_0014, 0x8009_0000)].into();
+        let read = |a: u32| mem.get(&a).copied();
+        let p = path("car_ptr->next->wheels[1].load").unwrap().unwrap();
+        assert!(p.derefs && p.fixed().is_none());
+        let (at, leaf) = p.resolve(&read).unwrap().unwrap();
+        assert_eq!((at, leaf), (0x8009_0007, psx_symbols::names::Type::Named { name: "i16".into() }));
+        assert_eq!(path("car_ptr[1].wheels[0].load").unwrap().unwrap().resolve(&read).unwrap().unwrap().0, 0x8008_001C);
+        // A pointer that cannot be read leads nowhere.
+        assert_eq!(path("car.next->next").unwrap().unwrap().resolve(&read).unwrap(), None);
+        // Not paths: hex, an untyped label, an offset; mistakes name themselves.
+        assert!(path("80070000").is_none() && path("STEP").is_none() && path("car+4").is_none());
+        assert!(path("car.wheel").unwrap().unwrap_err().contains("no field wheel (it has wheels, next)"));
+        assert!(path("car.wheels[4]").unwrap().unwrap_err().contains("has 4"));
+        assert!(path("car->wheels").unwrap().unwrap_err().contains("not a pointer"));
+        assert!(path("nope.x").unwrap().unwrap_err().contains("nope is neither a hex address nor a global"));
+        assert!(path("STEP.x").unwrap().unwrap_err().contains("no type"));
     }
 }

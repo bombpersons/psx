@@ -104,16 +104,27 @@ or 1, u8[4..7] bits 4 to 7 as a number; a poke writes those bits alone), a
 byte string strN (printable ASCII as itself, other bytes as \xNN, trailing
 zeros left off; until takes = and != only) or a width 1/2/4.
 
+ADDR is hex, a name from names/ (`name+0x10`), or a names path: a global
+with a type, then `.field`, `->field` (through a pointer) and `[N]`
+(`car_0->wheels[2].load`). A path's FMT defaults to its type's (an
+integer as itself, a pointer or float as x32, a char array as strN; a
+struct needs one), its column name to the path. sample, until and
+debug_show value read a path through a pointer anew each time (an empty
+cell, or a condition that does not hold, where a pointer is null or
+leads outside memory);
+watch, watch_reads, debug_go's write and read and debug_show bytes take
+where it leads when they start, its type's size by default; a poke
+takes a path without pointers.
+
 ## Observations
 
 - sample: samples.csv, one row per field. Each entry is a glossary quantity
-  by name (player_x), ADDR:FMT[:NAME] or {"addr","format","name"}.
+  by name (player_x), else a typed global of names/ by name,
+  ADDR:FMT[:NAME] or {"addr","format","name"}.
   sample_every thins rows. sample_per tick takes a row where the glossary
   binding's tick ends, with a tick column; glossary names and ticks build
   the workspace's binding and need its media. Values are raw, as recordings
-  hold them. A name the glossary does not have is one of the binding's
-  probes (its fn probes: values by any name, never recorded or judged), a
-  list's values joined by ;; probes_never_given lists names it never gave.
+  hold them.
 - until ADDR:FMT=VALUE (also != < <= > >=; several must all hold) stops at
   the first field where it holds: until_met, and the report's until gives
   run_frame and the values. frames caps the wait; until.met false means it

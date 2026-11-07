@@ -32,7 +32,9 @@ impl Op {
 /// `NAME OP VALUE` split into its parts, OP one of = != < <= > >=.
 pub fn split(s: &str) -> Result<(&str, Op, &str), String> {
     let bad = || format!("--until {s:?}: expected ADDR:FMT=VALUE (or != < <= > >=)");
-    let at = s.find(['=', '!', '<', '>']).ok_or_else(bad)?;
+    // Not a names path's `->`.
+    let at = s.char_indices().find(|&(i, c)| "=!<>".contains(c) && !(c == '>' && s[..i].ends_with('-')));
+    let at = at.ok_or_else(bad)?.0;
     let (sel, rest) = (s[..at].trim(), &s[at..]);
     let (op, value) = [("!=", Op::Ne), ("<=", Op::Le), (">=", Op::Ge), ("=", Op::Eq), ("<", Op::Lt), (">", Op::Gt)]
         .into_iter()
@@ -116,6 +118,13 @@ pub fn report(conds: &[Until], met: Option<(u64, u64)>, ram: &[u8], scratch: &[u
 #[cfg(test)]
 mod tests {
     use super::parse;
+
+    #[test]
+    fn a_paths_arrow_is_not_a_comparison() {
+        let (sel, op, v) = super::split("car_0->speed:i16>=-3").unwrap();
+        assert_eq!((sel, op == super::Op::Ge, v), ("car_0->speed:i16", true, "-3"));
+        assert_eq!(super::split("a->b>2").unwrap().0, "a->b");
+    }
 
     #[test]
     fn conditions_compare_in_the_columns_format() {

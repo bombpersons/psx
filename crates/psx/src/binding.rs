@@ -284,21 +284,6 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
         invoke(self.call, what, Some(m), args)
     }
 
-    /// The binding's probes with the machine as it is ([`abi::PROBES`]),
-    /// name to value or list of values: none from a binding built before
-    /// them.
-    pub fn probes(&self, m: &Machine) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let (code, text) = invoke_code(self.call, abi::PROBES, Some(m), [0; 4])?;
-        if code == abi::UNKNOWN {
-            return Ok(Default::default());
-        }
-        let text = answered(code, abi::PROBES, text)?;
-        match serde_json::from_str(&text) {
-            Ok(serde_json::Value::Object(o)) => Ok(o),
-            _ => Err(format!("the binding's probes: not a JSON object: {text}")),
-        }
-    }
-
     /// What the binding says of itself.
     pub fn described(&self) -> &D {
         &self.described
@@ -307,21 +292,6 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
 
 /// Calls the binding's `psx_capture_call` with psx's side of the boundary.
 fn invoke(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<String, String> {
-    let (code, out) = invoke_code(call, what, m, args)?;
-    answered(code, what, out)
-}
-
-/// [`invoke`]'s answer by its code; a refused read is already an error.
-fn answered(code: i32, what: u32, out: String) -> Result<String, String> {
-    match code {
-        abi::OK => Ok(out),
-        abi::PANICKED => Err(format!("the binding panicked: {out}")),
-        c => Err(format!("the binding gave code {c} for question {what}")),
-    }
-}
-
-/// Calls the binding: its code and answer.
-fn invoke_code(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<(i32, String), String> {
     let mut ctx = Ctx { m, refused: None, out: Vec::new() };
     let host = abi::Host {
         ctx: &mut ctx as *mut Ctx as *mut c_void,
@@ -334,10 +304,12 @@ fn invoke_code(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Re
     // SAFETY: `host` and `ctx` outlive the call.
     let code = unsafe { call(what, &host) };
     let out = String::from_utf8_lossy(&ctx.out).into_owned();
-    if code == abi::READ_REFUSED {
-        return Err(ctx.refused.take().unwrap_or_else(|| "a read was refused".into()));
+    match code {
+        abi::OK => Ok(out),
+        abi::PANICKED => Err(format!("the binding panicked: {out}")),
+        abi::READ_REFUSED => Err(ctx.refused.take().unwrap_or_else(|| "a read was refused".into())),
+        c => Err(format!("the binding gave code {c} for question {what}")),
     }
-    Ok((code, out))
 }
 
 /// The binding's answer for a set of quantities, as values of their

@@ -1,6 +1,6 @@
 # Plan: probes, the values inside a tick, compared
 
-*Steps 4 to 7 dropped, and steps 1 and 2 to come out (2026-11-07):
+*Steps 4 to 7 dropped, and steps 1 and 2 taken out (2026-11-07):
 docs/understanding-plan.md. Comparing the port's internal values with
 the original's makes them a target: an agent tunes until they match, and
 the port keeps the original's units and steps to have something to

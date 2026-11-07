@@ -24,7 +24,7 @@ fn sha256(bytes: &[u8]) -> String {
     psx_media::disc::sha256_bytes(bytes)
 }
 
-/// The glossary's binding, for its quantities, its probes and its tick:
+/// The glossary's binding, for its quantities and its tick:
 /// built, loaded and checked against the run's media.
 pub(crate) fn glossary_quantities(root: &Path, media: &Option<MediaId>) -> crate::Result<crate::ram::Quantities> {
     let (types, binding) = crate::scenario::glossary_binding(root)?;
@@ -258,20 +258,17 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     if per == crate::ram::SamplePer::Tick && cols.is_empty() {
         return Err(Error::invalid("--sample-per tick: give the values to sample with --sample"));
     }
-    let named = cols.iter().any(|c| matches!(c, crate::ram::Column::Quantity(_)));
-    let quantities = if per == crate::ram::SamplePer::Tick || named {
-        Some(match glossary.take() {
-            Some(q) => q?,
-            None => glossary_quantities(root, &media_id)?,
-        })
-    } else {
-        None
-    };
+    let (cols, quantities) =
+        crate::ram::with_glossary(cols, per == crate::ram::SamplePer::Tick, || match glossary.take() {
+            Some(q) => q,
+            None => glossary_quantities(root, &media_id),
+        })?;
     let tick =
         quantities.as_ref().filter(|_| per == crate::ram::SamplePer::Tick).map(|q| q.binding.described().tick.clone());
     let sampler =
         (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), per, quantities));
-    let read_ranges = obs.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>();
+    let read_ranges = obs.watch_reads.iter().map(|s| crate::run::parse_range_at(s, Some((&m.bus.ram, &m.bus.scratch))));
+    let read_ranges = read_ranges.collect::<Result<Vec<_>, _>>();
     let read_ranges = read_ranges.map_err(|e| Error::invalid(format!("--watch-reads: {e}")))?;
     if obs.snapshot_every == Some(0) || obs.sample_every == Some(0) {
         return Err(Error::invalid("--snapshot-every and --sample-every take N >= 1"));
@@ -542,14 +539,10 @@ fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
 /// at most `max` hits.
 pub(crate) fn watch(m: &mut Machine, specs: &[String], max: usize) -> crate::Result<()> {
     for w in specs {
-        let (addr, width) = crate::commands::split_width(w);
-        let width = width.unwrap_or("4");
-        let addr = crate::commands::addr_arg(addr, "watch address")?;
-        // Any byte length: the native watch covers [ADDR, ADDR+WIDTH).
-        let width: u32 = match width.parse() {
-            Ok(w) if w >= 1 => w,
-            _ => return Err(Error::invalid(format!("bad watch width {width:?} (bytes, e.g. 4)"))),
-        };
+        // Any byte length: the native watch covers [ADDR, ADDR+WIDTH); a
+        // names path through a pointer is where it leads now.
+        let (addr, width) = crate::run::range_at(w, Some((&m.bus.ram, &m.bus.scratch)))
+            .map_err(|e| Error::invalid(format!("watch: {e}")))?;
         m.bus.obs.watch(addr, width);
     }
     // Observer::watch has a diagnostic default; investigation runs honor the

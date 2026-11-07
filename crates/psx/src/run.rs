@@ -369,8 +369,8 @@ pub struct RunArgs {
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct ObserveArgs {
     /// Sample a value into samples.csv at every frame boundary (vblank), or every tick
-    /// (--sample-per): a glossary quantity or the binding's probe by name (croc_x), or RAM/scratchpad as
-    /// `ADDR:FMT[:NAME]`, FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12),
+    /// (--sample-per): a glossary quantity (croc_x), or RAM/scratchpad as `ADDR:FMT[:NAME]`, ADDR also a
+    /// names path (car_0->speed), FMT one of u8 i8 x8 u16 i16 x16 u32 i32 x32 fxI.F (fx16.16, fx4.12),
     /// a byte string strN (str32) or a width 1/2/4 (unsigned); MCP also takes {"addr","format","name"}. Repeatable.
     #[arg(long = "sample")]
     #[serde(default, rename = "sample")]
@@ -440,23 +440,45 @@ pub fn fold(addr: u32) -> u32 {
     if p < 0x0080_0000 { p & 0x1F_FFFF } else { p }
 }
 
-/// `LO-HI` or `ADDR[:WIDTH]` (hex) as a folded `[lo, hi)` range.
-pub fn parse_range_spec(s: &str) -> Result<(u32, u32), String> {
-    let h = |x: &str| crate::names_bind::address(x).map_err(|e| format!("{e} in {s:?}"));
-    let (lo, len) = match s.split_once('-') {
-        Some((a, b)) => {
-            let (a, b) = (h(a)?, h(b)?);
-            (a, b.checked_sub(a).filter(|&n| n > 0).ok_or_else(|| format!("empty range {s:?}"))?)
-        }
-        None => match crate::commands::split_width(s) {
-            (a, Some(w)) => {
-                (h(a)?, w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}"))?)
-            }
-            (_, None) => (h(s)?, 4),
-        },
-    };
+/// `LO-HI` or `ADDR[:WIDTH]` as a folded `[lo, hi)` range, a names path
+/// through a pointer where it leads in `mem` (RAM, scratchpad) now.
+pub fn parse_range_at(s: &str, mem: Option<(&[u8], &[u8])>) -> Result<(u32, u32), String> {
+    let (lo, len) = range_at(s, mem)?;
     let lo = fold(lo);
     Ok((lo, lo + len))
+}
+
+/// `LO-HI` or `ADDR[:WIDTH]`, unfolded, as (address, length). ADDR is hex,
+/// a name or a names path (its type's size by default, else 4).
+pub(crate) fn range_at(s: &str, mem: Option<(&[u8], &[u8])>) -> Result<(u32, u32), String> {
+    let h = |x: &str| crate::names_bind::address(x).map_err(|e| format!("{e} in {s:?}"));
+    // A `-` that is not a path's `->`.
+    let dash = s.char_indices().find(|&(i, c)| c == '-' && !s[i + 1..].starts_with('>')).map(|(i, _)| i);
+    if let Some(i) = dash {
+        let (a, b) = (h(&s[..i])?, h(&s[i + 1..])?);
+        return Ok((a, b.checked_sub(a).filter(|&n| n > 0).ok_or_else(|| format!("empty range {s:?}"))?));
+    }
+    let (a, w) = crate::commands::split_width(s);
+    let w = w.map(|w| w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}")));
+    let w = w.transpose()?;
+    match crate::names_bind::NamePath::parse(a) {
+        Some(Ok(p)) => {
+            let at = match (p.fixed(), mem) {
+                (Some(at), _) => at,
+                (None, Some((ram, scratch))) => match p.resolve(&|x| crate::ram::word_at(ram, scratch, x)) {
+                    Ok(Some((at, _))) => at,
+                    Ok(None) => {
+                        return Err(format!("{:?}: a pointer on the way is null or leads outside memory now", p.text));
+                    }
+                    Err(e) => return Err(e),
+                },
+                (None, None) => return Err(format!("{:?} reads a pointer, which is not read here", p.text)),
+            };
+            Ok((at, w.or(p.size().filter(|&n| n > 0)).unwrap_or(4)))
+        }
+        Some(Err(e)) => Err(e),
+        None => Ok((h(a)?, w.unwrap_or(4))),
+    }
 }
 
 /// Memory cards.

@@ -200,7 +200,7 @@ pub struct DebugShowArgs {
     #[arg(long)]
     #[serde(default)]
     pub registers: bool,
-    /// `ADDR:FMT[:NAME]`, a quantity or a probe.
+    /// As run's sample.
     #[arg(long = "value")]
     #[serde(default, rename = "value")]
     pub values: Vec<crate::ram::SampleSpec>,
@@ -687,9 +687,10 @@ impl Op for DebugGoArgs {
 
 fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
     let mut o = Open::load(&ctx.root, &a.which)?;
+    let mem = (&o.s.m.bus.ram[..], &o.s.m.bus.scratch[..]);
     let range = |s: &Option<String>, what: &str| {
         s.as_deref()
-            .map(|s| crate::run::parse_range_spec(s).map_err(|e| Error::invalid(format!("{what}: {e}"))))
+            .map(|s| crate::run::parse_range_at(s, Some(mem)).map_err(|e| Error::invalid(format!("{what}: {e}"))))
             .transpose()
     };
     let pc = match &a.pc {
@@ -757,7 +758,8 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
         o.s.observe(crate::run_native::observe::Writes { enabled: true, changes_only, scopes: scopes.clone() });
     }
     if !a.watch_reads.is_empty() {
-        let ranges = a.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>();
+        let mem = Some((&o.s.m.bus.ram[..], &o.s.m.bus.scratch[..]));
+        let ranges = a.watch_reads.iter().map(|s| crate::run::parse_range_at(s, mem)).collect::<Result<Vec<_>, _>>();
         o.s.observe(crate::run_native::observe::Reads {
             ranges: ranges.map_err(|e| Error::invalid(format!("watch_reads: {e}")))?,
             max: MAX_EVENTS,
@@ -960,18 +962,15 @@ fn gpu_capture(o: &Open) -> crate::Result<Value> {
 /// The go's sampler: rows per field (or per tick, which takes the
 /// binding's tick) from here.
 fn sampler(ctx: &Ctx, o: &mut Open, a: &DebugGoArgs) -> crate::Result<crate::ram::Sampler> {
-    use crate::ram::{Column, SamplePer};
+    use crate::ram::SamplePer;
     let cols = a.samples.iter().map(|s| s.parse()).collect::<Result<Vec<_>, _>>().map_err(Error::invalid)?;
     if a.sample_every == Some(0) {
         return Err(Error::invalid("sample_every takes N >= 1"));
     }
     let per = a.sample_per.unwrap_or_default();
-    let named = cols.iter().any(|c| matches!(c, Column::Quantity(_)));
-    let q = if named || per == SamplePer::Tick {
-        Some(crate::run_native::glossary_quantities(&ctx.root, &o.book.media_id)?)
-    } else {
-        None
-    };
+    let (cols, q) = crate::ram::with_glossary(cols, per == SamplePer::Tick, || {
+        crate::run_native::glossary_quantities(&ctx.root, &o.book.media_id)
+    })?;
     if per == SamplePer::Tick && o.s.tick.is_none() {
         o.s.tick = q.as_ref().map(|q| q.binding.described().tick.clone());
     }
@@ -981,8 +980,8 @@ fn sampler(ctx: &Ctx, o: &mut Open, a: &DebugGoArgs) -> crate::Result<crate::ram
 /// Each value now, by name, as sample would write it.
 fn values(ctx: &Ctx, o: &mut Open, specs: &[crate::ram::SampleSpec]) -> crate::Result<Value> {
     let cols = specs.iter().map(|s| s.parse()).collect::<Result<Vec<_>, _>>().map_err(Error::invalid)?;
-    let named = cols.iter().any(|c| matches!(c, crate::ram::Column::Quantity(_)));
-    let q = if named { Some(crate::run_native::glossary_quantities(&ctx.root, &o.book.media_id)?) } else { None };
+    let (cols, q) =
+        crate::ram::with_glossary(cols, false, || crate::run_native::glossary_quantities(&ctx.root, &o.book.media_id))?;
     let mut sampler = crate::ram::Sampler::new(cols, 1, crate::ram::SamplePer::Field, q);
     sampler.field(o.s.rel(), &o.s.m, true);
     let mut lines = sampler.out.lines();
@@ -997,7 +996,8 @@ fn values(ctx: &Ctx, o: &mut Open, specs: &[crate::ram::SampleSpec]) -> crate::R
 
 /// Bytes in RAM or the scratchpad as hex.
 fn bytes(m: &Machine, spec: &str) -> crate::Result<Value> {
-    let (lo, hi) = crate::run::parse_range_spec(spec).map_err(|e| Error::invalid(format!("bytes: {e}")))?;
+    let (lo, hi) = crate::run::parse_range_at(spec, Some((&m.bus.ram, &m.bus.scratch)))
+        .map_err(|e| Error::invalid(format!("bytes: {e}")))?;
     if hi - lo > 4096 {
         return Err(Error::invalid("bytes: at most 4096 at a time"));
     }

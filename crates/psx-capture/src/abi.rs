@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{Glossary, Hook, Hooks, Machine, Map, Probes, Programs, Quantities, Script, Tick, string};
+use crate::{Glossary, Hook, Hooks, Machine, Map, Programs, Quantities, Script, Tick, string};
 
 /// psx's side, valid for one call.
 #[repr(C)]
@@ -50,9 +50,8 @@ pub const HOOK: u32 = 3;
 /// end]]}`).
 pub const MAP: u32 = 4;
 // 5 was INPUT, the game's own pad, retired for `latch`: not reused.
-/// `what`: the probes (a JSON object, name to value or list of values). A
-/// binding built before answers [`UNKNOWN`]: it has none.
-pub const PROBES: u32 = 6;
+// 6 was PROBES, values to compare with the port's, retired: a binding that
+// still answers it is never asked. Not reused.
 
 /// Returned: the answer was written.
 pub const OK: i32 = 0;
@@ -129,12 +128,6 @@ pub unsafe fn call<G: Glossary>(glossary: &G, what: u32, host: *const Host) -> i
                 let mut map = Map::default();
                 glossary.map(name, &code, &mut map);
                 *out = map.json();
-                true
-            }
-            PROBES => {
-                let mut p = Probes::default();
-                glossary.probes(m, &mut p);
-                *out = p.json();
                 true
             }
             _ => false,

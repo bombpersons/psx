@@ -21,7 +21,7 @@ media they were saved with.
 
 ## Named states
 
-A start state is where scenarios, plays and probes begin. A state file holds
+A start state is where scenarios and plays begin. A state file holds
 the console's whole memory (the game's code), so it stays out of git; its
 chain, every run from power-on that led to it, is small and committed.
 

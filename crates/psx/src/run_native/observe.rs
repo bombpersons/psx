@@ -260,9 +260,15 @@ impl Observer for Samples {
             "file": out.dir.join("samples.csv"), "rows": s.rows, "every": s.every,
             "per": if tick { "tick" } else { "field" },
             "columns": s.columns.iter().map(|c| match c {
-                crate::ram::Column::Memory(c) => json!({"name": c.name, "address": hex(c.addr), "region": region(c.addr), "format": c.fmt.name()}),
-                crate::ram::Column::Quantity(n) => json!({"name": n, "source":
-                    if s.quantities.as_ref().is_some_and(|q| q.is_quantity(n)) { "glossary" } else { "probe" }}),
+                crate::ram::Column::Memory(c) => match &c.path {
+                    Some(p) if p.derefs => json!({"name": c.name, "path": p.text, "format": c.fmt.name(), "note": "read through a pointer each row: an empty cell where one is null or leads outside memory"}),
+                    p => {
+                        let mut v = json!({"name": c.name, "address": hex(c.addr), "region": region(c.addr), "format": c.fmt.name()});
+                        if let Some(p) = p { v["path"] = json!(p.text) }
+                        v
+                    }
+                },
+                crate::ram::Column::Quantity(n) => json!({"name": n, "source": "glossary"}),
             }).collect::<Vec<_>>(),
             "timing": if tick {
                 "a row at the end of every tick of the game's logic (the glossary binding's tick store), as that store left memory; tick counts the ticks ended since the run start"
@@ -283,25 +289,6 @@ impl Observer for Samples {
                 r["quantities"] = json!(
                     "raw, as recordings hold them: a fixed's underlying integer, a float's bit pattern; an empty cell where the binding refused"
                 );
-            }
-            let probes: Vec<&String> = s
-                .columns
-                .iter()
-                .filter_map(|c| match c {
-                    crate::ram::Column::Quantity(n) if !q.is_quantity(n) => Some(n),
-                    _ => None,
-                })
-                .collect();
-            if !probes.is_empty() {
-                r["probes"] = json!(
-                    "the binding's probes (its fn probes), raw; a list's values joined by ;, an empty cell where the binding gave none or refused"
-                );
-                let never: Vec<&String> = probes.into_iter().filter(|n| !q.probes_given.contains(*n)).collect();
-                if !never.is_empty() {
-                    r["probes_never_given"] = json!(never);
-                    r["probes_given"] = json!(q.probes_given);
-                    r["quantities_known"] = json!(q.types.keys().collect::<Vec<_>>());
-                }
             }
             if q.refusal_count > 0 {
                 r["refusal_count"] = json!(q.refusal_count);

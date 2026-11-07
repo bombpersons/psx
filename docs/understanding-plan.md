@@ -190,6 +190,20 @@ debug_show value and debug_go write/read.
 *Done when* `car_0->field` samples, stops and shows as its address and
 type would, on Croc and GT2, and a binding built with probes still loads.
 
+**Done** (2026-11-07). `names_bind::NamePath` resolves a typed global's
+`.field`, `->field` and `[N]` (a null pointer or one outside memory
+leads nowhere); sample, until and debug_show value read it anew each
+row, watch, watch_reads, debug_go write/read and bytes where it leads
+when they start; a bare name is the glossary's quantity, else a typed
+global. On Croc, `croc->x` (a smoke names file, `Obj *` at 0x8007528C)
+sampled equal to croc_x, stopped on its store and held in until; on GT2
+a struct global at the car sampled as its addresses (mass_scale 5165)
+and stopped on the accelerator's store in map_pedals. GT2's own
+`Car *car_0` is declared a pointer where the car itself is (the word is
+0 all race): its agent's names to correct. Croc's binding rebuilt
+against the probes-era psx-capture with a `fn probes` loaded and
+sampled.
+
 ### 2. Failures without the tick
 
 port_check's and scenario_check's results for the agent give a failing
