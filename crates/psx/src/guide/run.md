@@ -31,10 +31,21 @@ and release 4 before the next; a game that ignores that is not taking input
 yet (a fade, a load): wait on a state, not more fields. A menu's cursor is a
 variable like any other (topic code): until on it waits on the item.
 
-## Adjusted recordings
+## Adjustments
 
-scenario_record and scenario_play adjust the original to the port's model
-unless stock is given, and the recording names what they did:
+The original runs adjusted to the port's model, as its recordings run it.
+run (so each new step of a chain), scenario_record and scenario_play take latch,
+steady and fix by default, each where it applies: latch where the
+glossary's binding builds for the run's medium (it gives the tick), fix
+where fixes/ holds C (C that does not build fails the run). run's report
+names them (adjust), says what they did (adjusted) and why any did not
+apply (adjust_unavailable). adjust names a set instead; stock (or [])
+runs the game without them, to compare with the stock game. In run,
+latch lets input through where no tick ends for 10 fields (the boot, a
+load, a menu the binding's tick does not see) until one ends again;
+adjusted.passed_through lists those fields. A recording holds its input
+for its ticks instead. run writes the fix build it ran as fix.json;
+fix_build runs a kept one in place of fixes/.
 
 - latch: the game's pad changes only where a tick ends, to that tick's
   input. Input waits for the tick's end; psx writes it into the game's pad
@@ -84,8 +95,7 @@ run with recording (SCENARIO/NAME) runs a captured recording again: the
 scenario's state, the pad of each recorded tick, its adjustments (fix with
 the build it kept), ending where its last tick does. Its fields and ticks
 count as the recording's, so sample with sample_per tick gives the
-recorded values beside whatever else it samples. adjust takes steady
-alone; latch and fix come only from a recording.
+recorded values beside whatever else it samples.
 
 ## Memory formats
 

@@ -192,6 +192,13 @@ fn step_of(ctx: &Ctx, file: &Path) -> crate::Result<(Value, Value, Parent)> {
         run["input"] = read_json(&replay)?;
         return finish_step(ctx, &report, run, json!("end"), sha);
     }
+    if !report["recording"].is_null() {
+        return Err(Error::invalid(format!(
+            "{}: a run from a recording ({}): its start is the scenario's, so name a state from a run of the chain instead",
+            file.display(),
+            report["recording"]
+        )));
+    }
     let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let state = match name.strip_prefix("state_f").and_then(|n| n.strip_suffix(".bin")) {
         Some(n) => json!(n.parse::<u64>().map_err(|_| Error::invalid(format!("{name}: not a checkpoint name")))?),
@@ -248,6 +255,7 @@ pub(crate) fn recipe_of(ctx: &Ctx, dir: &Path) -> Result<Value, String> {
         "its report does not note the trace window (an older psx): run it again with run --trace for a recipe",
     )?;
     let mut run = run_from_report(&report, &json!("end"));
+    keep_adjustments(ctx, &report, &mut run).map_err(|e| e.to_string())?;
     run["trace"] = json!(true);
     for (k, v) in options {
         if !(v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v == &json!(0)) {
@@ -331,6 +339,12 @@ pub(crate) fn reach_idling(ctx: &Ctx, chain_file: &Path, idle: u32) -> crate::Re
             }
         }
     }
+    // Idle under the last run's adjustments.
+    for k in ["adjust", "fix_build"] {
+        if !last_run[k].is_null() {
+            idle_run[k] = last_run[k].clone();
+        }
+    }
     let idle_step = json!({"run": idle_run, "state": "end"});
     key =
         sha256(format!("{key}\n{}\n{}\n{}", chain["media_identity"], idle_step["run"], idle_step["state"]).as_bytes());
@@ -361,11 +375,53 @@ fn finish_step(
             }
         }
     }
+    keep_adjustments(ctx, report, &mut run)?;
     let step = json!({"run": run, "state": state, "state_sha256": sha, "made_with": made_with(report),
         "emulator": report["build"]["emulator"]});
     let media = json!({"media": id["media"], "media_identity": id["media_identity"], "bios_sha256": id["bios_sha256"]});
     let noted_sha = id["from_state_sha256"].as_str().map(str::to_string);
     Ok((step, media, parent.map(|p| (p, noted_sha))))
+}
+
+/// The adjustments the run ran with, named in its step (`stock` for none:
+/// run's own default is the port's), and its fix build kept in the chains'
+/// `fixes/` by its sha256, so the step runs again as it ran whatever fixes/
+/// holds later.
+fn keep_adjustments(ctx: &Ctx, report: &Value, run: &mut Value) -> crate::Result<()> {
+    if run["adjust"].is_null() {
+        let names = report["adjust"].as_array().filter(|a| !a.is_empty());
+        run["adjust"] = names.map_or(json!(["stock"]), |a| json!(a));
+    }
+    let fix = run["adjust"].as_array().is_some_and(|a| a.iter().any(|x| x == "fix"));
+    if !fix {
+        return Ok(());
+    }
+    let build = run["fix_build"]
+        .as_str()
+        .map(PathBuf::from)
+        .or_else(|| report["files"]["fix.json"]["path"].as_str().map(PathBuf::from));
+    let Some(build) = build else {
+        return Err(Error::new("no_fix_build", "the run ran with fix and its report keeps no fix.json: run it again"));
+    };
+    let bytes = read(&absolute(ctx, &build))?;
+    let (_, chain_dir) = Dirs { states: None, chains: None }.get(ctx);
+    let kept = chain_dir.join("fixes").join(format!("{}.json", &sha256(&bytes)[..16]));
+    if !kept.is_file() {
+        write(&kept, &bytes)?;
+    }
+    run["fix_build"] = json!(noted(ctx, &kept));
+    Ok(())
+}
+
+/// A step's run as run takes it: a step that names no adjustments was saved
+/// before run's default was the port's, and ran stock.
+pub(crate) fn as_saved(ctx: &Ctx, run: &mut Value) {
+    if run["adjust"].is_null() {
+        run["adjust"] = json!(["stock"]);
+    }
+    if let Some(p) = run["fix_build"].as_str() {
+        run["fix_build"] = json!(absolute(ctx, Path::new(p)));
+    }
 }
 
 /// The chains in `chains`, by name.
@@ -507,6 +563,7 @@ fn run_step(
     out: &Path,
 ) -> crate::Result<(PathBuf, Value)> {
     let mut run = step["run"].clone();
+    as_saved(ctx, &mut run);
     if let Some(m) = media.as_str() {
         run["media"] = json!(crate::moved::find(&ctx.root, Path::new(m)));
     }
@@ -786,6 +843,44 @@ mod tests {
         std::fs::write(dir.join("report.json"), report.to_string()).unwrap();
     }
 
+    /// A step names the adjustments its run ran with and keeps its fix
+    /// build; a run from an older psx ran stock.
+    #[test]
+    fn a_step_keeps_its_adjustments_and_its_fix_build() {
+        let root = std::env::temp_dir().join(format!("psx-states-adjusted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ctx = Ctx { root: root.clone(), cancel: None };
+        let dirs = Dirs { states: None, chains: None };
+        fake_run(&root.join("r1"), b"boot", None);
+        save(&ctx, &root.join("r1/state.bin"), "old", "an older psx's run", &dirs, false).unwrap();
+        let old = read_json(&root.join("notes/states/old.json")).unwrap();
+        assert_eq!(old["steps"][0]["run"]["adjust"], json!(["stock"]));
+        fake_run(&root.join("r2"), b"title", None);
+        let fix = br#"{"functions": [], "image": "00", "sources": "s"}"#;
+        std::fs::write(root.join("r2/fix.json"), fix).unwrap();
+        let mut report = read_json(&root.join("r2/report.json")).unwrap();
+        report["adjust"] = json!(["latch", "steady", "fix"]);
+        report["files"] = json!({"fix.json": {"path": root.join("r2/fix.json")}});
+        std::fs::write(root.join("r2/report.json"), report.to_string()).unwrap();
+        save(&ctx, &root.join("r2/state.bin"), "title", "the title", &dirs, false).unwrap();
+        // The run's directory can go: the build is the chain's.
+        std::fs::remove_dir_all(root.join("r2")).unwrap();
+        let chain = read_json(&root.join("notes/states/title.json")).unwrap();
+        let run = &chain["steps"][0]["run"];
+        assert_eq!(run["adjust"], json!(["latch", "steady", "fix"]));
+        let kept = format!("notes/states/fixes/{}.json", &sha256(fix)[..16]);
+        assert_eq!(run["fix_build"], json!(kept));
+        assert_eq!(std::fs::read(root.join(&kept)).unwrap(), fix);
+        // As run takes it again: a path from the root, and stock for none.
+        let mut again = run.clone();
+        as_saved(&ctx, &mut again);
+        assert_eq!(again["fix_build"], json!(root.join(&kept)));
+        let mut older = json!({"frames": 10});
+        as_saved(&ctx, &mut older);
+        assert_eq!(older["adjust"], json!(["stock"]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_run_from_a_replaced_state_keeps_its_chain() {
         let root = std::env::temp_dir().join(format!("psx-states-replaced-{}", std::process::id()));
@@ -840,7 +935,7 @@ mod tests {
         assert_eq!(
             r["run"],
             json!({"frames": 120, "input": [{"frame": 3, "buttons": ["START"]}], "trace": true,
-                "trace_from_frame": 20, "trace_frames": 60, "max_events": 50})
+                "trace_from_frame": 20, "trace_frames": 60, "max_events": 50, "adjust": ["stock"]})
         );
         // From a state no chain names, or from an older psx's report: none, and why.
         std::fs::write(run.join("report.json"), report(options, "def").to_string()).unwrap();

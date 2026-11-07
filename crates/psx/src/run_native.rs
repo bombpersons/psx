@@ -41,6 +41,91 @@ fn glossary_quantities(root: &Path, media: &Option<MediaId>) -> crate::Result<cr
     Ok(crate::ram::Quantities::new(binding, types))
 }
 
+/// A run's adjustments (not a recording's), the tick latch needs, and why
+/// any of the defaults did not apply.
+struct Chosen {
+    set: crate::adjust::Adjustments,
+    tick: Option<crate::binding::Tick>,
+    unavailable: serde_json::Map<String, Value>,
+}
+
+/// The adjustments `o` asks for: by default latch (where the glossary's
+/// binding gives the tick for this medium), steady, and fix (where fixes/
+/// holds C, or the kept build `fix_build`); `stock` or none named for the
+/// stock game; otherwise those named, each refused where it cannot apply.
+/// `glossary` keeps the binding loaded for latch, for the run's quantities.
+fn adjustments(
+    root: &Path,
+    o: &crate::run::ObserveArgs,
+    media: &Option<MediaId>,
+    glossary: &mut Option<crate::Result<crate::ram::Quantities>>,
+) -> crate::Result<Chosen> {
+    let mut c = Chosen { set: crate::adjust::Adjustments::stock(), tick: None, unavailable: serde_json::Map::new() };
+    let named: Option<Vec<&str>> = o.adjust.as_ref().map(|v| v.iter().map(String::as_str).collect());
+    if let Some(n) = &named {
+        if n.contains(&"stock") && n.len() > 1 {
+            return Err(Error::invalid("adjust: stock is the game without adjustments: name it alone"));
+        }
+        if let Some(x) = n.iter().find(|x| !["latch", "steady", "fix", "stock"].contains(x)) {
+            return Err(Error::invalid(match *x {
+                "off" => "adjust off: off turns off what a scenario's [off] names; run from a recording of it (recording SCENARIO/NAME)".to_string(),
+                x => format!("adjust {x:?}: run knows latch, steady and fix (by default all three where they apply), or stock"),
+            }));
+        }
+    }
+    let wants = |x: &str| named.as_ref().is_none_or(|n| n.contains(&x));
+    if o.fix_build.is_some() && !wants("fix") {
+        return Err(Error::invalid("fix_build is a kept build of fixes/ to run: it goes with fix"));
+    }
+    c.set.steady = wants("steady");
+    if wants("latch") {
+        let q = glossary_quantities(root, media);
+        match &q {
+            Ok(q) => {
+                c.set.latch = true;
+                c.tick = Some(q.binding.described().tick.clone());
+            }
+            Err(e) if named.is_none() => {
+                c.unavailable.insert("latch".into(), json!(format!("no tick for latch: {}", e.message)));
+            }
+            Err(e) => {
+                return Err(Error::invalid(format!(
+                    "adjust latch: latch needs the game's tick from the glossary's binding: {}",
+                    e.message
+                ))
+                .with("problems", e.to_value()["problems"].clone()));
+            }
+        }
+        *glossary = Some(q);
+    }
+    if wants("fix") {
+        c.set.fix = match &o.fix_build {
+            Some(p) => {
+                let text = std::fs::read_to_string(p).map_err(|e| Error::io(p, e))?;
+                let detail: Value = serde_json::from_str(&text)
+                    .map_err(|e| Error::malformed(format!("{}: a fix build (fix.json): {e}", p.display())))?;
+                let mut d = serde_json::Map::new();
+                d.insert("adjust".into(), json!(["fix"]));
+                d.insert("fix".into(), detail);
+                let a = crate::adjust::Adjustments::from_details(&d)
+                    .map_err(|e| Error::malformed(format!("{}: {e}", p.display())))?;
+                a.fix
+            }
+            None => crate::decomp::fixes(root)?,
+        };
+        if c.set.fix.is_none() {
+            if named.is_some() {
+                return Err(Error::invalid(format!(
+                    "adjust fix: {}/ holds no C: fix runs the agent's replacements of the functions that delay input",
+                    crate::decomp::FIXES
+                )));
+            }
+            c.unavailable.insert("fix".into(), json!(format!("{}/ holds no C", crate::decomp::FIXES)));
+        }
+    }
+    Ok(c)
+}
+
 pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> crate::Result<(bool, Value)> {
     let bios = match std::fs::read(&a.bios) {
         Ok(b) => b,
@@ -61,18 +146,12 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         }
         None => (m.unwrap(), None),
     };
-    let mut steady = false;
-    for name in &a.observe.adjust {
-        match name.as_str() {
-            "steady" => steady = true,
-            "latch" | "fix" => {
-                return Err(Error::invalid(format!(
-                    "adjust {name}: latch changes the pad where a tick ends and fix is the build a recording kept, so both come from a recording: run with recording (SCENARIO/NAME) runs under its adjustments; psx scenario record makes recordings latched and fixed"
-                )));
-            }
-            other => return Err(Error::invalid(format!("adjust {other:?}: run knows steady"))),
-        }
-    }
+    // A recording brings its own; otherwise the port's (latch, steady, fix) where each applies.
+    let mut glossary = None;
+    let chosen = match recording {
+        Some(_) => None,
+        None => Some(adjustments(root, &a.observe, &media_id, &mut glossary)?),
+    };
     // Replay events: pad state from each frame (frames counted from the run start).
     if crate::replay::uses_sticks(&events) && m.bus.sio0.pad.kind != psx_core::pad::PadKind::DualShock {
         return Err(Error::new(
@@ -111,9 +190,12 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
             )));
         }
         adjusted = Some(adjust.names());
-    } else if steady {
-        let adjust = crate::adjust::Adjustments { steady: true, ..crate::adjust::Adjustments::stock() };
-        s.adjust = Some(adjust.start(&mut s.m));
+    } else if let Some(c) = &chosen {
+        if !c.set.is_stock() {
+            s.adjust = Some(c.set.start(&mut s.m).falling_back());
+        }
+        s.tick = c.tick.clone();
+        adjusted = Some(c.set.names());
     }
     let start_frame = s.start;
     let m = &mut s.m;
@@ -128,8 +210,14 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         return Err(Error::invalid("--sample-per tick: give the values to sample with --sample"));
     }
     let named = cols.iter().any(|c| matches!(c, crate::ram::Column::Quantity(_)));
-    let quantities =
-        if per == crate::ram::SamplePer::Tick || named { Some(glossary_quantities(root, &media_id)?) } else { None };
+    let quantities = if per == crate::ram::SamplePer::Tick || named {
+        Some(match glossary.take() {
+            Some(q) => q?,
+            None => glossary_quantities(root, &media_id)?,
+        })
+    } else {
+        None
+    };
     let tick =
         quantities.as_ref().filter(|_| per == crate::ram::SamplePer::Tick).map(|q| q.binding.described().tick.clone());
     let sampler =
@@ -255,6 +343,10 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     if write_png(&vram, 1024, 512, &m.bus.gpu.vram.lock().rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
         out.files.insert("vram.png".into(), json!({"path": vram}));
     }
+    if let Some(f) = chosen.as_ref().and_then(|c| c.set.fix_detail()) {
+        // The build it ran, for a chain step to keep (fix_build runs it again).
+        out.put("fix.json", serde_json::to_string_pretty(&f).unwrap_or_default().as_bytes());
+    }
     s.finish(&mut out)?;
     let m = &s.m;
 
@@ -312,9 +404,17 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     if let Some(names) = adjusted {
         report.insert("adjust".into(), json!(names));
         report.insert("adjusted".into(), s.adjust.as_ref().and_then(|r| r.report(m)).unwrap_or(Value::Null));
-        report.insert("recording".into(), json!(recording.as_ref().map(|r| &r.0)));
-    } else if !obs.adjust.is_empty() {
-        report.insert("adjust".into(), json!(obs.adjust));
+        match &recording {
+            Some(r) => {
+                report.insert("recording".into(), json!(r.0));
+            }
+            None => {
+                let c = chosen.as_ref().expect("a run's adjustments");
+                if !c.unavailable.is_empty() {
+                    report.insert("adjust_unavailable".into(), Value::Object(c.unavailable.clone()));
+                }
+            }
+        }
     }
     if let Some(d) = &decomp {
         report.insert("decomp".into(), d.report(m));
@@ -964,4 +1064,46 @@ fn spu_summary(log: &psx_core::observe::SpuLog, events: &[Value], dir: &Path) ->
         "matching": "sample_sha256 equals assets_extract adpcm_sha256 for the VAB/VAG waveform with the same ADPCM bytes; upload.ram is the sample's main RAM source for loads/trace_cd provenance",
         "timing": "frame/run_frame as in other logs; cycle is the system clock; end events are detected per device step",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chosen(root: &Path, v: Value) -> crate::Result<Chosen> {
+        let o: crate::run::ObserveArgs = serde_json::from_value(v).unwrap();
+        adjustments(root, &o, &None, &mut None)
+    }
+
+    /// By default the port's adjustments where each applies, the rest said
+    /// why; named ones are refused where they cannot apply.
+    #[test]
+    fn a_run_takes_the_ports_adjustments_where_they_apply() {
+        let root = std::env::temp_dir().join(format!("psx-run-adjust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let c = chosen(&root, json!({})).unwrap();
+        assert_eq!(c.set.names(), ["steady"]);
+        assert!(c.tick.is_none());
+        assert!(c.unavailable["latch"].as_str().unwrap().starts_with("no tick for latch"), "{:?}", c.unavailable);
+        assert_eq!(c.unavailable["fix"], "fixes/ holds no C");
+        assert!(chosen(&root, json!({"adjust": ["stock"]})).unwrap().set.is_stock());
+        assert!(chosen(&root, json!({"adjust": []})).unwrap().set.is_stock());
+        assert_eq!(chosen(&root, json!({"adjust": ["steady"]})).unwrap().unavailable.len(), 0);
+        let refused = |v: Value, says: &str| {
+            let e = chosen(&root, v).err().unwrap();
+            assert!(e.to_string().contains(says), "{e}");
+        };
+        refused(json!({"adjust": ["stock", "steady"]}), "name it alone");
+        refused(json!({"adjust": ["off"]}), "scenario's [off]");
+        refused(json!({"adjust": ["fast"]}), "run knows latch, steady and fix");
+        refused(json!({"adjust": ["latch"]}), "latch needs the game's tick");
+        refused(json!({"adjust": ["fix"]}), "fixes/ holds no C");
+        refused(json!({"adjust": ["steady"], "fix_build": "fix.json"}), "it goes with fix");
+        // A kept build runs without fixes/.
+        std::fs::write(root.join("fix.json"), r#"{"functions": [], "image": "00", "sources": "s"}"#).unwrap();
+        let c = chosen(&root, json!({"adjust": ["fix"], "fix_build": root.join("fix.json")})).unwrap();
+        assert_eq!(c.set.fix.unwrap().sources, "s");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

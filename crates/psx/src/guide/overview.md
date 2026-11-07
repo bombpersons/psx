@@ -151,7 +151,7 @@ the quantities that changed. The sticks are the raw bytes the game read
 (128 at rest), so they need pad dualshock in the chain and analog mode
 (the game's switch, or ANALOG) before they move; the port reads them as
 Pad::sticks and Pad::analog.
-Recordings are latched and steady unless stock (topic run).
+Recordings are latched, steady and fixed unless stock (topic run).
 Beside it, <name>.coverage.json keeps what the
 original ran as the inventory's code (no instructions, so it is committed):
 take code_inventory first, and unpack compressed overlays first (topic

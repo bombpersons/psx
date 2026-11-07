@@ -204,7 +204,8 @@ impl RunCmdArgs {
                 ("from_state", self.from_state.is_some()),
                 ("input", self.input.is_some()),
                 ("replay", self.replay.is_some()),
-                ("adjust", !self.observe.adjust.is_empty()),
+                ("adjust", self.observe.adjust.is_some()),
+                ("fix_build", self.observe.fix_build.is_some()),
                 ("memcard1, memcard2 and pad", self.cards.given()),
                 ("save_as", self.save_as.is_some()),
                 ("diagnose", self.diagnose),
@@ -439,13 +440,19 @@ pub struct ObserveArgs {
     #[arg(long = "pad-reads")]
     #[serde(default)]
     pub pad_reads: bool,
-    /// Adjust the original to the port's model while it runs (docs/master-plan.md):
-    /// `steady`, no tick overruns its fields (the CPU's own work costs a quarter of its
-    /// clocks, the GPU draws without taking time). Repeatable. latch needs a recording's
-    /// ticks: scenario record makes recordings latched.
+    /// The adjustments to the original, as the port's recordings run it (docs/master-plan.md).
+    /// By default latch (the pad changes where the glossary binding's tick ends, passing
+    /// through where no tick ends for a while), steady (no tick overruns its fields) and fix
+    /// (fixes/ built), each where it applies; the report says why any did not. Name some
+    /// to run those alone, or `stock` for none. Repeatable.
     #[arg(long = "adjust")]
     #[serde(default)]
-    pub adjust: Vec<String>,
+    pub adjust: Option<Vec<String>>,
+    /// A kept build of fixes/ (a run's fix.json, a chain step's) to run as fix instead of
+    /// building fixes/.
+    #[arg(long = "fix-build")]
+    #[serde(default)]
+    pub fix_build: Option<PathBuf>,
     /// Run with the agent's C (decomp/) in place of the functions it
     /// defines: alone, those whose last code check passed on this C and
     /// names; `--decomp=all` every one; `--decomp=a,b` those named. The
@@ -715,6 +722,9 @@ pub(crate) fn brief(v: &Value) -> Value {
         "states",
         "saved_as",
         "loads",
+        "adjust",
+        "adjust_unavailable",
+        "adjusted",
         "read_watch",
         "pad_reads",
         "spu",
@@ -815,10 +825,14 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["event_logs"].as_object().is_some_and(|m| !m.is_empty()) {
         s["event_logs"] = v["event_logs"].clone();
     }
-    for k in ["saved_as", "loads"] {
+    for k in ["saved_as", "loads", "adjust", "adjust_unavailable"] {
         if !v[k].is_null() {
             s[k] = v[k].clone();
         }
+    }
+    let passed = &v["adjusted"]["passed_through"];
+    if !passed.is_null() {
+        s["latch_passed_through"] = pick(passed, &["fields", "range_count"]);
     }
     if let Some(pokes) = v["pokes"].as_array() {
         s["pokes"] = json!(pokes.len());

@@ -306,8 +306,26 @@ impl Adjustments {
             waited: 0,
             late_fields: 0,
             late_ticks: Vec::new(),
+            fallback: None,
         }
     }
+}
+
+/// Fields without a tick before latch lets input through, where it falls back.
+pub(crate) const STALL_FIELDS: u64 = 10;
+
+/// `latch` where no tick ends for a while (the boot, a load, a menu the
+/// binding's tick does not see): input passes through to the controller.
+#[derive(Default)]
+struct Fallback {
+    /// Fields ended since a tick last ended.
+    since_tick: u64,
+    /// The run field input began passing through in, while it does.
+    passing: Option<u64>,
+    /// The run fields it passed through, as [from, to).
+    passed: Vec<(u64, u64)>,
+    /// The last run field begun.
+    rel: u64,
 }
 
 /// Adjustments while a run goes.
@@ -350,6 +368,8 @@ pub(crate) struct Running {
     /// `latch`: the fields of ticks that ended late, and those ticks.
     late_fields: u64,
     late_ticks: Vec<u64>,
+    /// `latch`: passing input through where no tick ends, when it falls back.
+    fallback: Option<Fallback>,
 }
 
 /// Where a latched change stands (`latch`).
@@ -392,18 +412,47 @@ impl Running {
     /// Input from the recording's events or ticks: on the controller at
     /// once, or with `latch`, where the tick ends.
     pub fn input(&mut self, m: &mut Machine, i: &crate::replay::Input) {
-        if self.a.latch {
+        if self.passing() {
+            self.pass_through(m, Some(i));
+        } else if self.a.latch {
             self.held = Some(*i);
         } else {
             crate::replay::apply(m, i);
         }
     }
 
+    /// With latch, let input through where no tick ends for
+    /// [`STALL_FIELDS`] fields, until one ends again (a run or a play; a
+    /// recording holds its input for its ticks instead).
+    pub fn falling_back(mut self) -> Running {
+        if self.a.latch {
+            self.fallback = Some(Fallback::default());
+        }
+        self
+    }
+
+    /// Whether input passes through now (no tick has ended for a while).
+    pub fn passing(&self) -> bool {
+        self.fallback.as_ref().is_some_and(|f| f.passing.is_some())
+    }
+
+    /// A field ended; run field `rel` begins. Where it falls back, latch
+    /// lets input through once no tick has ended for [`STALL_FIELDS`] fields.
+    pub fn field_ended(&mut self, rel: u64, m: &mut Machine) {
+        let Some(f) = &mut self.fallback else { return };
+        f.rel = rel;
+        f.since_tick += 1;
+        if f.passing.is_none() && f.since_tick > STALL_FIELDS {
+            f.passing = Some(rel);
+            self.pass_through(m, None);
+        }
+    }
+
     /// `latch` where the game's tick is not running (a menu, the boot):
     /// input reaches the controller at once, as on the stock game, and the
     /// buffer latched where the last tick ended is no longer put back over
-    /// the game's own polls. The next tick to end latches again. Only for a
-    /// person's play: a recording refuses a tick that does not end instead.
+    /// the game's own polls. The next tick to end latches again. Only where
+    /// it falls back: a recording refuses a tick that does not end instead.
     pub fn pass_through(&mut self, m: &mut Machine, i: Option<&crate::replay::Input>) {
         if let Some(i) = i.or(self.held.as_ref()).copied() {
             crate::replay::apply(m, &i);
@@ -457,6 +506,12 @@ impl Running {
 
     /// Tick `n` ended (its quantities read) on `m`.
     pub fn tick_ended(&mut self, n: u64, m: &mut Machine) {
+        if let Some(f) = &mut self.fallback {
+            f.since_tick = 0;
+            if let Some(from) = f.passing.take() {
+                f.passed.push((from, f.rel + 1));
+            }
+        }
         if let Some(f) = &self.flow {
             if f.in_handler() {
                 self.in_handler += 1;
@@ -562,6 +617,18 @@ impl Running {
         if !self.lag.is_empty() {
             r["lag_frame_ticks"] = json!(self.lag.iter().take(20).collect::<Vec<_>>());
         }
+        if let Some(fb) = &self.fallback {
+            let mut passed = fb.passed.clone();
+            passed.extend(fb.passing.map(|from| (from, fb.rel)));
+            if !passed.is_empty() {
+                r["passed_through"] = json!({
+                    "fields": passed.iter().map(|(a, b)| b - a).sum::<u64>(),
+                    "ranges": passed.iter().take(20).map(|(a, b)| json!([a, b])).collect::<Vec<_>>(),
+                    "range_count": passed.len(),
+                    "note": format!("run fields [from, to) in which no tick had ended for {STALL_FIELDS} fields (the boot, a load, a menu the binding's tick does not see): input reached the controller at once, as on the stock game, until a tick ended again"),
+                });
+            }
+        }
         if self.in_handler > 0 {
             r["ticks_ended_in_handler"] = json!(self.in_handler);
             r["note"] = json!(
@@ -593,6 +660,39 @@ mod tests {
         let e = Adjustments::from_details(&details(json!(["latch_v9"]))).unwrap_err();
         assert!(e.contains("\"latch_v9\"") && e.contains("knows latch, steady"), "{e}");
         assert!(Adjustments::from_details(&details(json!("latch"))).is_err());
+    }
+
+    /// Where it falls back, latch lets input through once no tick has ended
+    /// for STALL_FIELDS fields, until one does, and reports those fields.
+    #[test]
+    fn latch_passes_through_where_no_tick_ends_and_says_where() {
+        use psx_core::sio0::button::CROSS;
+        let mut m = Machine::new(vec![0; 0x8_0000]);
+        let set = Adjustments { latch: true, ..Adjustments::stock() };
+        let mut r = set.start(&mut m).falling_back();
+        let cross = crate::replay::Input { frame: 0, buttons: CROSS.into(), sticks: [0x80; 4] };
+        r.input(&mut m, &cross);
+        assert_eq!(m.bus.sio0.buttons & CROSS, 0, "held for the tick's end");
+        for rel in 1..=STALL_FIELDS {
+            r.field_ended(rel, &mut m);
+        }
+        assert!(!r.passing());
+        r.field_ended(STALL_FIELDS + 1, &mut m);
+        assert!(r.passing());
+        assert_ne!(m.bus.sio0.buttons & CROSS, 0, "the held input let through");
+        r.field_ended(STALL_FIELDS + 2, &mut m);
+        r.tick_ended(1, &mut m);
+        assert!(!r.passing());
+        let passed = &r.report(&m).unwrap()["passed_through"];
+        assert_eq!(passed["ranges"], json!([[STALL_FIELDS + 1, STALL_FIELDS + 3]]));
+        assert_eq!(passed["fields"], 2);
+        // Without falling back (a recording's), it holds.
+        let mut held = set.start(&mut m);
+        for rel in 1..=STALL_FIELDS + 5 {
+            held.field_ended(rel, &mut m);
+        }
+        assert!(!held.passing());
+        assert!(held.report(&m).unwrap()["passed_through"].is_null());
     }
 
     #[test]

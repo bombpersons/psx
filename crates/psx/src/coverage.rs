@@ -1271,6 +1271,7 @@ impl CoverageArgs {
             }
             let out = ctx.root.join(".psx/corpus-check").join(format!("{k:03}"));
             let _ = std::fs::remove_dir_all(&out);
+            crate::states::as_saved(ctx, &mut run);
             run["media"] = media.clone();
             run["out"] = json!(out);
             run["summary"] = json!(true);

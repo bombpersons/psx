@@ -253,6 +253,11 @@ impl Session {
                 self.last_field = frame;
                 let rel = self.rel();
                 crate::live::field(&self.m);
+                if rel > 0 {
+                    if let Some(a) = &mut self.adjust {
+                        a.field_ended(rel, &mut self.m);
+                    }
+                }
                 for o in &mut self.observers {
                     if let Flow::Stop(why) = o.field(rel, &mut self.m)? {
                         return Ok(Ended::Stopped(why));
@@ -297,6 +302,9 @@ impl Session {
     pub fn last_field(&mut self, complete: bool) -> crate::Result<()> {
         let rel = self.rel();
         if complete {
+            if let Some(a) = &mut self.adjust {
+                a.field_ended(rel, &mut self.m);
+            }
             self.driver.field(rel, self.ticks, &mut Pad { m: &mut self.m, adjust: self.adjust.as_mut() });
         }
         for o in &mut self.observers {

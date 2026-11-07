@@ -480,17 +480,10 @@ struct LiveAdjust {
     tick: Option<crate::binding::Tick>,
     run: crate::adjust::Running,
     ticks: u64,
-    /// Fields since a tick last ended.
-    since_tick: u64,
     /// Whether latch lets input through where no tick ends (a play from
     /// power-on, whose boot and menus may not run the binding's tick).
     fallback: bool,
-    /// Letting input through now.
-    passing: bool,
 }
-
-/// Fields without a tick before a play's latch lets input through.
-const STALL_FIELDS: u64 = 10;
 
 impl LiveAdjust {
     fn new(
@@ -500,7 +493,8 @@ impl LiveAdjust {
         fallback: bool,
     ) -> Self {
         let run = set.start(m);
-        LiveAdjust { set, tick, run, ticks: 0, since_tick: 0, fallback, passing: false }
+        let run = if fallback { run.falling_back() } else { run };
+        LiveAdjust { set, tick, run, ticks: 0, fallback }
     }
 }
 
@@ -554,7 +548,7 @@ impl Session {
     /// where none end (or None without latch).
     pub fn latch_state(&self) -> Option<&'static str> {
         let a = self.adjust.as_ref().filter(|a| a.set.latch)?;
-        Some(if a.passing { "no ticks, passing through" } else { "holding for ticks" })
+        Some(if a.run.passing() { "no ticks, passing through" } else { "holding for ticks" })
     }
 
     pub fn rel(&self) -> u64 {
@@ -584,11 +578,7 @@ impl Session {
             // Latch: step by step, as scenario record runs it.
             Some(a) if a.set.latch && a.tick.is_some() => {
                 if changed {
-                    if a.passing {
-                        a.run.pass_through(&mut self.m, Some(&input));
-                    } else {
-                        a.run.input(&mut self.m, &input);
-                    }
+                    a.run.input(&mut self.m, &input);
                 }
                 let tick = a.tick.clone().unwrap();
                 while self.m.bus.frames == f {
@@ -596,16 +586,10 @@ impl Session {
                     a.run.step(&info, &mut self.m);
                     if tick.ended_by(&info) {
                         a.ticks += 1;
-                        a.since_tick = 0;
-                        a.passing = false;
                         a.run.tick_ended(a.ticks, &mut self.m);
                     }
                 }
-                a.since_tick += 1;
-                if a.fallback && !a.passing && a.since_tick > STALL_FIELDS {
-                    a.passing = true;
-                    a.run.pass_through(&mut self.m, None);
-                }
+                a.run.field_ended(self.m.bus.frames - self.start_frame, &mut self.m);
             }
             // Steady and off are the machine's own settings.
             _ => {
@@ -1127,6 +1111,16 @@ fn finish(a: &HandoffArgs, s: Session, end: End, note: String, dir: &Path) -> cr
     if let Some(m) = &a.media {
         replay_args["media"] = json!(m);
     }
+    // As played: run's own default is the port's adjustments.
+    let adjust = s.adjustments();
+    replay_args["adjust"] = if adjust.is_empty() { json!(["stock"]) } else { json!(adjust) };
+    if let Some(f) = s.adjust.as_ref().and_then(|l| l.set.fix_detail()) {
+        let p = dir.join("fix.json");
+        let text = serde_json::to_string_pretty(&f).unwrap_or_default();
+        std::fs::write(&p, &text).map_err(|e| Error::io(&p, e))?;
+        files.insert("fix.json".into(), json!({"path": p, "sha256": psx_media::disc::sha256_bytes(text.as_bytes())}));
+        replay_args["fix_build"] = json!(p);
+    }
     match &a.from_state {
         Some(p) => replay_args["from_state"] = json!(p),
         None => {
@@ -1339,7 +1333,7 @@ mod tests {
         assert_eq!(s.latch_state(), Some("holding for ticks"));
         s.frame(CROSS.into(), [0x80; 4]);
         assert_eq!(s.m.bus.sio0.buttons & CROSS, 0, "held for the tick's end");
-        for _ in 0..STALL_FIELDS {
+        for _ in 0..crate::adjust::STALL_FIELDS {
             s.frame(CROSS.into(), [0x80; 4]);
         }
         assert_eq!(s.latch_state(), Some("no ticks, passing through"));

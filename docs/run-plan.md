@@ -60,7 +60,8 @@ why and where.
 - **Driver.** What sets the pad: events by run field (input, replay), a
   recording's ticks, or a person (the handoff). Every input goes through
   the adjustments' `Running`, so latch works wherever there is a tick.
-  Without a recording or a person, latch and fix are refused as now.
+  latch, steady and fix are on by default wherever they can apply
+  (step 3).
 - **Observers.** One trait:
   - `step`, `field` and `tick` hooks, each answering continue or stop;
   - whether it needs every instruction;
@@ -207,23 +208,73 @@ step that keeps a state at field N becomes a step of N fields, and
    adjustment report and RAM. adjust takes steady alone; latch and fix
    come with a recording. frames is now optional (60, or the recording's
    length).
-3. **record on the session.** The recorder observer, with lead_in and
+3. **The port's adjustments by default.** The recordings a port is
+   matched against run latched, steady and fixed, so the game is
+   investigated that way too. `run`, `states save` and (later) the
+   debugger run with latch, steady and fix wherever each can apply:
+   - **steady** always;
+   - **latch** when the glossary binding builds and gives the tick. Where
+     no tick ends for a while (the boot, a load, a menu whose loop the
+     binding does not see), input passes through to the controller, as a
+     play from power-on does now (one rule in `Running`, which the
+     handoff uses too), and the report lists the fields it passed
+     through;
+   - **fix** when `fixes/` holds C, built when the run starts; C that does
+     not build fails the run.
+
+   The report names what was on and why any of the three was not (no
+   binding, no fixes/). `adjust` names a set instead (`["stock"]` or `[]`
+   for none); a run asking for latch or fix where it cannot apply is
+   refused.
+
+   Chain steps keep how they ran. A step saved from now on names its
+   adjustments (`stock` when none) and, with fix, points to its build
+   kept in `notes/states/fixes/` by its sha256 (run writes the build it
+   ran as `fix.json`; `fix_build` runs a kept one), so a rebuild runs what
+   the step ran, whatever fixes/ holds by then. A step that names none
+   was saved before this and is stock. Coverage recipes keep theirs the
+   same way. A play's reproduce arguments name its adjustments, so a
+   state from a latched play is a chain step too.
+
+   *Done when* every existing chain rebuilds to its sha256s, a state
+   saved from a run under the defaults rebuilds to the same sha256 after
+   fixes/ changes, and a run from power-on reports the fields latch
+   passed through.
+
+   *Done (2026-11-07).* run takes latch, steady and fix by default where
+   each applies (`adjust_unavailable` says why one did not; `stock` or
+   `[]` for none; named ones are refused where they cannot apply), and
+   writes the fix build as `fix.json`; `fix_build` runs a kept one. The
+   fallback is `Running::falling_back` (passing through after
+   `STALL_FIELDS` fields with no tick, listed in
+   `adjusted.passed_through`), and the handoff's play uses it too. A
+   step saved now names its adjustments and keeps its build in
+   `notes/states/fixes/`; one that names none runs stock, as do old
+   coverage recipes, and a play's reproduce names its adjustments. All
+   18 chains (Croc 6, GT2 8, TRC 4) rebuild to their sha256s. On a copy
+   of GT2's workspace a power-on run under the defaults latched, steadied
+   and fixed, passing through fields 11 to 1800 (no tick in the boot and
+   menus); two steps saved from it rebuilt to the same sha256s after
+   fixes/ was changed to build a different image. The handoff's
+   `verify` still replays a play stock; step 5 moves it onto the
+   session.
+4. **record on the session.** The recorder observer, with lead_in and
    reach_end as advances of the same session.
 
    *Done when* scenario_check passes on Croc's and GT2's
    recordings, and re-recording one gives the same file.
-4. **The handoff on the session.** The person as a driver, and rewind
+5. **The handoff on the session.** The person as a driver, and rewind
    from the session's checkpoints.
 
    *Done when* a play recorded by a test gives the same
    recording as before, and web's play still rewinds.
-5. **The debugger.** Sessions on disk, the debug_* calls over MCP and
+6. **The debugger.** Sessions on disk, the debug_* calls over MCP and
    CLI, and stops and shows as above.
 
    *Done when* a test stops at a PC, at a write and at the
    tick, goes back one stop, and shows the same registers as the first
    time.
-6. **The moves.** diagnose, the GPU capture options, trace_start,
+7. **The moves.** diagnose, the GPU capture options, trace_start,
    save_state_at, poke and brief come out of run; their uses go to the
    debugger (diagnose's report becomes debug_show hardware);
    `states rebuild` rewrites save_state_at steps. Guide topics run and
@@ -231,7 +282,7 @@ step that keeps a state at field N becomes a step of N fields, and
 
    *Done when* every chain in the workspaces rebuilds to the
    same state sha256, and the guide's run topic is shorter than now.
-7. **A trial.** GT2's agent chases a divergence with the debugger.
+8. **A trial.** GT2's agent chases a divergence with the debugger.
 
    *Done when* its feedback file says what it used and what it
    missed.

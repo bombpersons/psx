@@ -27,8 +27,10 @@ chain, every run from power-on that led to it, is small and committed.
 
 - .psx/states/NAME.bin: the state.
 - notes/states/NAME.json: the chain: a description in game terms, the media
-  and BIOS, and each run's frames, input, pokes, until and pad, with the
-  state each ended in and its sha256.
+  and BIOS, and each run's frames, input, pokes, until, pad and adjustments
+  (fix with its build, kept in notes/states/fixes/; a step that names none
+  ran stock), with the state each ended in and its sha256. A rebuild runs
+  each step as it ran; a step on newer fixes is a run saved again.
 
 run save_as NAME description TEXT runs one step and names the state it ends
 in; from_state continues from it:
