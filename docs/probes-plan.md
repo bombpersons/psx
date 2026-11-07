@@ -1,5 +1,13 @@
 # Plan: probes, the values inside a tick, compared
 
+*Steps 4 to 7 dropped, and steps 1 and 2 to come out (2026-11-07):
+docs/understanding-plan.md. Comparing the port's internal values with
+the original's makes them a target: an agent tunes until they match, and
+the port keeps the original's units and steps to have something to
+compare. The quantities are the only target; the original's internals
+are understood through checked C and the debugger, and read with names
+paths.*
+
 A port is judged at the tick, on the glossary's quantities: game-terms
 state both programs have whatever their shape. That is the right
 contract, but a poor microscope. When `car_speed` parts at tick 217, the
