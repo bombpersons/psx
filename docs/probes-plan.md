@@ -57,10 +57,12 @@ Four pieces:
    `Observed`, not in recordings. Adding or removing a probe rebuilds the
    binding and nothing else. A binding without the method has no probes.
 
-2. **The original, replayed as recorded.** psx reruns a recording the way
-   the determinism check does (its chain, its adjustments, its pad) and
-   reads the binding's probes where each tick ends, beside the
-   quantities.
+2. **The original, in run.** run's sample takes probe names beside
+   glossary names, read where the binding's tick ends, so probes serve an
+   investigation before there is a port to compare. And run replays a
+   recording as it was recorded (its chain, its adjustments, its pad),
+   so what it samples is what the recording saw: latch and fix, which run
+   refuses today, come with the recording.
 
 3. **Probes in the port.** The port reports values from wherever it
    computes them:
@@ -102,8 +104,8 @@ ran a different number of times).
   `probes` is committed is the agent's choice.
 - **The tick stays the contract.** A port is still judged only by its
   recordings' quantities, in game terms.
-- **No new command.** The replay and the diff are an option of an
-  existing one (step 4 picks which).
+- **No new command.** The original's side is run; the diff is an option
+  of an existing command (step 5 picks which).
 
 ## Steps
 
@@ -117,17 +119,29 @@ psx loads it when present, so bindings built before stay valid.
 *Done when* a test binding's probes are read at each tick of a run, and a
 binding without them loads as before.
 
-### 2. The original, replayed with probes
+### 2. Probes in run's sample
 
-The determinism check's replay (chain, adjustments, the recording's pad)
-with the binding's probes read where each tick ends: `probes.jsonl` in the
-run_dir, one line per tick, the tick numbered as the recording numbers
-it.
+sample's entries take probe names as they take glossary names, by the
+binding's tick (`sample_per: tick`, the tick column as now); a name both
+the glossary and the probes give is the glossary's. Values come as the
+binding gives them, a repeated name as its list.
 
-*Done when* a probe reading the same memory as a quantity gives that
-quantity's recorded value on every tick of a latched recording.
+*Done when* a run from a state samples a probe and a quantity per tick,
+and a probe reading the same memory as the quantity gives the same
+values.
 
-### 3. Probes in the port
+### 3. run from a recording
+
+run takes a recording (`scenario/name`): its scenario's chain, then the
+recording's pad from its first tick, under the recording's adjustments
+(latch, steady, off, and fix with the build the recording kept), for the
+recording's length unless fields says less. Without a recording, run
+refuses latch and fix as now.
+
+*Done when* sampling a latched, fixed recording's quantities in run gives
+the recorded values on every tick.
+
+### 4. Probes in the port
 
 `psx_scenario::probe!` and its recorder; `launch` takes `"probes":true`;
 `serve` puts each tick's probes in its reply; `Process` collects them. The
@@ -137,9 +151,10 @@ writes one.
 *Done when* the Rust and C examples' probes arrive per tick through
 `Process`, and a port that never writes any still replies `{}`.
 
-### 4. The diff
+### 5. The diff
 
-The two sides run over the same recording, matched by name. The result:
+run from the recording (step 3) on the original's side, the port
+over the same recording on the other, matched by name. The result:
 per probe, the first tick it differs and the values around it; the names
 one side lacks; the recording's first failing quantity, for reference.
 Where it lives is decided here: an option of `scenario_show` (which
@@ -149,17 +164,18 @@ the port over a recording). Neither writes a verdict.
 *Done when* a planted mistake in an example port's intermediate value is
 reported at its tick before the quantity it feeds parts.
 
-### 5. The guide
+### 6. The guide
 
 A paragraph in the overview's Fix, general like the rest: the first tick
 that differs is where; probes show which value; they are not judged and
 come out when done. The binding's probes go where the guide describes the
-binding (topic setup).
+binding (topic setup); sample's probe names and run from a recording go
+in topic run.
 
 *Done when* the guide says it in under 150 words and the overview stays
 under its size limit.
 
-### 6. A trial on Gran Turismo 2
+### 7. A trial on Gran Turismo 2
 
 Its agent's steer divergence, with probes in place of `dbg_*` fields.
 
