@@ -92,7 +92,7 @@ global's as name+0xOFF within its type. symbols adds other symbol files.
 
 When reading a function leaves doubt about what it does, write it as C
 and check it: checked C is a way to be sure of a rule, not a step a
-feature needs. The agent's C for a function goes in decomp/<name>.c, including
+port needs. The agent's C for a function goes in decomp/<name>.c, including
 "names.h": every struct of the names files at its offsets (each offset
 and size asserted), the globals and every function's prototype, so the C
 reads the game's data and calls the original's functions by name.
@@ -135,17 +135,17 @@ the quantities that differ (differs_in), is a recording that replays as
 recorded without the C and not with it: a function it replaces does not
 do what the original's does there.
 
-port_check gives a failing feature a pointer, worked out on one of its
-recordings replayed on the original, at the first difference: for each
+port_check gives a failing recording a pointer, worked out on it
+replayed on the original, at the first difference: for each
 quantity that differs, the bytes the binding reads for it (reads), the
 functions that stored into them just before (writers; written_before
 where none did lately), and the code run there for the first time in
 the recording (first_run, called_first when the function itself is
-new). Each function comes with the features whose code lists it and its
+new). Each function comes with whether the port's code cites it and its
 C (checked, unchecked, none), and with_c says whether the recording
-replays with the checked C. evidence reads it: another feature's code
-not done (the rule may be there: Fix names it), this feature's code with
-no checked C (the rule is not understood yet), or checked C that
+replays with the checked C. evidence reads it: code cited nowhere or set
+aside in not_ported.toml (the rule may be there), cited code with no
+checked C (the rule is not understood yet), or checked C that
 replays it (the rule is known there: the port does not follow it, or
 what is around it differs). port next's Fix carries it. It is a place
 to look, not the moment: debug_start on the recording finds that (a pc
@@ -187,16 +187,16 @@ the blocks only that way reaches; a branch behind it that never ran is
 counted under branches_behind_missed_ways, not listed. With function=
 (an address or a name) it gives that function's C from Ghidra instead,
 each line with how often the runs ran it and each condition marked never
-true or never false. port next groups a feature's open branches by test
+true or never false. port next groups the open branches by test
 and outcome, and a wont_reach key may be a test as it gives them: it
-answers for every branch of the feature's code testing it.
+answers for every branch of the code to port testing it.
 code_coverage_diff runs=[...]
 against=[...]: only lists the functions only the first set ran, further the
 blocks and branch ways (taken, fell through) only they took in functions
-both reached. To find a feature's code, diff runs or recordings doing it
+both reached. To find the code of a behaviour, diff runs or recordings doing it
 (walking, a jump) against runs from the same state not doing it; more
 against runs (other actions) leave out more shared code. Swap the sets for
-what the feature skips.
+what it skips.
 
 ## Scripted rules
 
@@ -238,7 +238,7 @@ name+0xSTART..0xEND (end excluded), and wont_reach takes a position
 (name+0xAT) or a stretch inside them. code_coverage and code_coverage_diff
 on recordings report programs: stretches read, sites and ways (with a
 map, statements run and routines entered), and in a diff the ones only the
-first set ran, which locate a feature's part of the script.
+first set ran, which locate a behaviour's part of the script.
 
 ## Compressed code
 

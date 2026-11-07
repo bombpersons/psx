@@ -704,7 +704,7 @@ impl std::fmt::Display for Stretch {
     }
 }
 
-/// One thing a feature's script stretch has to have covered: a stretch
+/// One thing a script stretch of the code to port has to have covered: a stretch
 /// read or never read, or a decision; `never` is what no recording did
 /// there (empty when covered).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -715,7 +715,7 @@ pub struct Item {
     pub routine: Option<String>,
 }
 
-/// What the feature's script stretches `code` have covered, by the merged
+/// What the script stretches `code` (the code to port) have covered, by the merged
 /// recordings `m`: each stretch read and not read (when the binding
 /// declared the program) and each decision in it; and what keeps them from
 /// being counted.
@@ -724,7 +724,7 @@ pub fn items(m: &Merged, code: &[Stretch]) -> (Vec<Item>, Vec<String>) {
     for s in code {
         let Some(p) = m.programs.get(&s.program) else {
             problems.push(format!(
-                "code {s}: no recording of the feature has the program {}: the glossary binding's programs (or hooks) name it, and recordings made before it did are recorded again",
+                "code {s}: no work recording has the program {}: the glossary binding's programs (or hooks) name it, and recordings made before it did are recorded again",
                 s.program
             ));
             continue;
@@ -840,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn kept_programs_merge_and_give_a_features_items() {
+    fn kept_programs_merge_and_give_the_codes_items() {
         let mut a = Program { bytes: Some(0x20), sha256: Some("s".into()), ..Program::default() };
         a.read.extend([0x0, 0x1, 0x2, 0x8, 0x9]);
         a.sites.insert(0x0, 3);
@@ -886,7 +886,7 @@ mod tests {
         m.add(&doc(&other), "c");
         assert!(m.problems[0].starts_with("c: its program croc holds other bytes"), "{:?}", m.problems);
         let (_, problems) = super::items(&m, &[st("gex+0x0..0x4"), st("croc+0x10..0x30")]);
-        assert!(problems[0].starts_with("code gex+0x0..0x4: no recording of the feature has the program gex"));
+        assert!(problems[0].starts_with("code gex+0x0..0x4: no work recording has the program gex"));
         assert_eq!(problems[1], "code croc+0x10..0x30: past the end of croc (0x20 bytes)");
     }
 

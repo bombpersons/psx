@@ -48,7 +48,7 @@ impl Git {
     }
 }
 
-/// Where a branch of a feature's code is.
+/// Where a branch of the code to port is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Place {
     /// A conditional branch of its machine code, in the function at `function`.
@@ -59,7 +59,7 @@ pub enum Place {
     Script { at: Stretch, routine: Option<String> },
 }
 
-/// A branch of a feature's code, as its recordings ran it: a conditional
+/// A branch of the code to port, as the work recordings ran it: a conditional
 /// branch of its machine code, or a stretch or decision of its script.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {

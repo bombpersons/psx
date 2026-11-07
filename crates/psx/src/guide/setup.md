@@ -131,7 +131,7 @@ Keep each project's cargo target directory to itself.
 
 port_add NAME writes a ready-made crate under addons/NAME/, a workspace
 member game/ depends on, with the add-ons it needs. None is required: a
-port of one feature's rules passes its scenarios on the template alone.
+port of a few rules passes its scenarios on the template alone.
 
 - shell: the window (windowed or borderless fullscreen, any size and
   aspect), the fixed-step loop at the port's tick rate, and the pad from

@@ -46,12 +46,18 @@ next` gave one item at a time, in this order:
 7. **Play:** the person played each feature freely; those recordings
    (`play_*`) were held out, judged only once the code was reviewed.
 
+psx has since dropped features: the recordings are the unit, and the code
+to port is what they run. `psx port update` moved this workspace: the
+entries' won't-reach branches to `catalogue/wont_reach.toml`, the
+person's plays to `goal.toml`'s `held_out`, and the entries themselves
+out (git keeps them; `F-0004`, outside the goal, went with them).
+
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `goal.toml` | The goal, the person's confirmation and the confirmed `wont_reach` branches |
-| `catalogue/` | One entry per feature: what it is in game terms, its code in the original, its recordings |
+| `goal.toml` | The goal, the person's held-out plays and their confirmation, with the confirmed `wont_reach` branches |
+| `catalogue/` | `wont_reach.toml`: the branches no recording can reach, and why |
 | `glossary/` | The quantities compared (`croc_x`, `croc_vertical_speed`, ...) and where the original keeps them |
 | `scenarios/` | The start state's scenario and its recordings: Croc's quantities and the pad per tick (`.jsonl`), and the branches each run took (`.coverage.json`) |
 | `game/src/lib.rs` | `Game`, the port psx drives: the tick's steps in the original's order, at its 25 Hz |

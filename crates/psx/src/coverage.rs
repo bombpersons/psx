@@ -1558,7 +1558,7 @@ impl CoverageDiffArgs {
                 }
                 r
             }).collect::<Vec<_>>(),
-            "next": "read out for every function, block and branch way: these are the candidates for the feature's code; disassemble or decompile them, and keep what a run without the feature also reaches out of the feature",
+            "next": "read out for every function, block and branch way: these are the candidates for the code behind the difference; disassemble or decompile them, and set aside what a run without it also reaches",
         });
         if let Some(hint) = unheld(&inv, &json!(null), no_image.len() as u64) {
             r["code_not_held"] = hint;

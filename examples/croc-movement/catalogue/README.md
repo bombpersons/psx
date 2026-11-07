@@ -1,55 +1,70 @@
 # The catalogue
 
-One file per feature of the game, named by its id: `F-0001.md`,
-`F-0002.md`, and so on. A feature is one capability a player would name:
-"car handling on tarmac", "Croc's jump", "the race HUD".
+What the agent has set aside or does not know yet, for the whole goal:
+three files, each optional until it has something in it.
+
+## not_ported.toml
+
+The code to port is every function the work recordings run (every
+recording under `scenarios/` but the person's plays, `goal.toml`'s
+`held_out`), less what this file lists, by entry or address range (the
+end excluded), with why:
 
 ```toml
-+++
-id = "F-0007"
-title = "Car handling on tarmac"
-area = "driving"
-depends = ["F-0002", "F-0005"]   # car setup data, track surfaces
-code = ["0x8002D810"]
-questions = ["does the handbrake change grip, or only steering?"]
-
-[recordings]
-work = ["tarmac/full_lock"]
-held_out = ["tarmac/lap_one"]
-
-[wont_reach]                     # branches no recording can reach, and why
-"0x8002D8A4" = "the debug camera's car: no game mode sets it"
-+++
-A paragraph in game terms: what the player sees and does, and what is in
-and out of this feature.
+"0x80010088" = "memcpy: the port has its own"
+"0x80050000..0x80058000" = "libgte's helpers: the port does its own maths"
 ```
 
-The front matter is TOML between `+++` lines. Top-level keys come before
-the `[recordings]` and `[wont_reach]` tables.
+Library code, the CD and sound drivers, the GPU's command building and
+debug code go here; the port has its own of those, or none. Every other
+function they run is cited by address in the port's code (`game/`,
+`tools/`) where the port follows it: one cited nowhere is work, and the
+goal is finished only once none is. When code listed here is on the path
+to quantities that differ, the pointer says so.
 
-- `id` is the file's name. `title`, `area` and the paragraph are required.
-- `depends` lists the features this one cannot work without. The goal's
-  features and everything they depend on are its closure: psx works it out.
-- A feature is its own when someone could want it without its neighbours,
-  and when it has behaviour of its own. "Physics" is too coarse, "the
-  friction curve" too fine.
-- `code` lists the original's functions that are the feature, by entry
-  address, found with psx (`code coverage diff`, watches): each must be a
-  function the inventory has.
-- `recordings` names the scenario recordings the feature is checked
-  against, as `<scenario>/<name>`: `work` while it is built, `held_out`
-  once it matches. This is the only place a feature names them; its
-  scenarios are those its recordings come from.
-- `wont_reach` gives the branches of its code no recording can reach, each
-  a conditional branch in one of its functions, with why. The person
-  confirms them with `psx port confirm --yes`; one added or changed later
-  needs confirming again.
-- `questions` lists what is not known yet.
+## wont_reach.toml
 
-All but `id`, `title` and `area` may stay empty until the goal is
-confirmed; `psx port next` asks for them.
+The branches of the code to port no recording can reach, each with why:
 
-`goal.toml` lists the features the person wants. `psx port confirm` shows
-the list, the closure, the won't-reach branches and any problems; the
-person confirms it with `psx port confirm --yes`. After that the list may
-grow; taking a feature out needs the person to confirm again.
+```toml
+"0x8002D8A4" = "the debug camera's car: no game mode sets it"
+"0x8002D800..0x8002D860" = "the 4WD path: every car on the disc is 2WD"
+```
+
+A key is a conditional branch's address, a script position, a test as
+`psx port next` gives it (it answers for every branch testing it), or a
+range (the end excluded) answering for the branches in it no recording
+ran; a recording that runs one makes it a problem. `psx port confirm`
+says how many branches each range answers for. The person confirms them
+with `psx port confirm --yes`; one added or changed later needs
+confirming again.
+
+## questions.md
+
+What is not known yet, one `- ` line each:
+
+```markdown
+- does the handbrake change grip, or only steering?
+```
+
+Take a line out once it is answered (the answer goes where it is used: a
+citation, a scenario, the glossary). The goal is not finished while one
+is open.
+
+## Drawing
+
+What drawing shows is checked through quantities, not screens: the
+camera, animation and the HUD have their quantities in the glossary and
+their recordings. `psx scenario show --screens` puts both games' screens
+side by side for you to look at.
+
+## The goal
+
+`goal.toml` holds the person's description, the assets to extract and
+their plays held out. A scenario's toml names the assets its recordings
+need (`assets = [...]`, as `formats/README.md` says): psx asks for them to
+be imported and checked before those recordings' work. `psx port
+confirm` shows the goal, the plays, the won't-reach branches and any
+problems; the person confirms it with `psx port confirm --yes`. The
+review asks whether the recordings show everything the description asks
+for.

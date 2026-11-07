@@ -1822,7 +1822,7 @@ impl Op for ScenarioShowArgs {
     }
 }
 
-/// What stops one scenario from counting toward its feature's stage 2:
+/// What stops one scenario's recordings from counting toward the goal:
 /// problems in its files, no captured recording, or no passing determinism
 /// check of the files as they are.
 pub fn unready(root: &Path, id: &str) -> Vec<String> {

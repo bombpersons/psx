@@ -9,14 +9,14 @@ backed by that evidence.
 ## The loop
 
 When the workspace has `goal.toml`, psx leads the work. Call `port_next`: it
-gives one item (what, for which feature, why, and the fact that will show it
-done). Do it until that fact holds, commit, and call `port_next` again.
-Name the feature's id in each of its commits (`F-0003: stomp hang`).
-`port_status` shows every feature of the goal by stage. An item for the
+gives one item (what, for which recording when it is one's, why, and the
+fact that will show it done). Do it until that fact holds, commit, saying
+what changed, and call `port_next` again. `port_status` shows where the
+goal stands: its recordings, the code to port and its branches. An item for the
 person (Confirm, Stuck, Wait) waits for them: tell them and stop. A play
 request does not: it queues and `port_next` goes on to other work. psx's
-`guide` tool explains each item; `catalogue/README.md` has the feature
-format. psx writes `.psx/verdicts/`; never edit them.
+`guide` tool explains each item; `catalogue/README.md` has the
+catalogue's files. psx writes `.psx/verdicts/`; never edit them.
 
 ## Layout
 
@@ -31,7 +31,7 @@ The template has no window, renderer or engine: the game's architecture is
 yours to choose. `psx port add` adds ready-made crates under `addons/` when
 the port wants them (`psx port add full`: a window, a renderer with a PS1
 and a modern look, the disc import on start-up, menus); they are this
-project's code once added. A port of one feature's rules needs none.
+project's code once added. A port of a few rules needs none.
 
 ## What psx relies on
 
@@ -103,7 +103,7 @@ yours to decide. What the tools rely on besides the above:
 
 ## The review
 
-Each time a feature comes to match its recordings, again when it is
+Each time the goal comes to match its recordings, again when it is
 finished (its branches resolved), and when much of the code has changed
 since the last review, the code is reviewed by someone who did not
 write it: a sub-agent or a fresh session, given the brief
@@ -113,9 +113,9 @@ review asks whether you would write a new game like this, and its
 findings say how to restructure it. They go in `review.md`; answer each
 one: done (with `port_check` passing again), or kept and why.
 
-## Beyond the features
+## Beyond the recordings
 
-A goal may ask for more than the game's features: the original's whole
+A goal may ask for what no recording checks: the original's whole
 front end (menus, saves, options), an editor for the port's formats, or
 mod support (`game` is a library). Add them when it does.
 

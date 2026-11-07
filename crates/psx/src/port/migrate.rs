@@ -235,6 +235,14 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
         write(root, QUESTIONS, &t)?;
     }
     write(root, GOAL, &text)?;
+    // The READMEs init wrote, where they still tell of features.
+    if read(root, "catalogue/README.md")?.is_some_and(|t| t.contains("F-0001.md")) {
+        write(root, "catalogue/README.md", super::init::CATALOGUE_README)?;
+    }
+    let old = "A feature's entry names the assets its\nrecordings need";
+    if let Some(t) = read(root, "formats/README.md")?.filter(|t| t.contains(old)) {
+        write(root, "formats/README.md", &t.replace(old, "A scenario's toml names the assets its\nrecordings need"))?;
+    }
     for rel in entries.iter().map(|(r, _)| r).chain(&outside) {
         let p = root.join(rel);
         std::fs::remove_file(&p).map_err(|e| Error::io(&p, e))?;
@@ -260,6 +268,7 @@ mod tests {
             goal,
             &[
                 ("catalogue/F-0001.md", entry),
+                ("catalogue/README.md", "One file per feature: `F-0001.md`, ...\n"),
                 ("scenarios/walk.toml", "kind = \"walk\"\n\n[params]\nx = 1\n"),
                 ("scenarios/walk/a.jsonl", ""),
                 ("scenarios/walk/b.jsonl", ""),
@@ -288,6 +297,7 @@ mod tests {
             text.starts_with(super::super::GOAL_TOML.lines().next().unwrap()) && !text.contains("feature"),
             "{text}"
         );
+        assert!(!std::fs::read_to_string(d.0.join("catalogue/README.md")).unwrap().contains("F-0001.md"));
         assert!(!d.0.join("catalogue/F-0001.md").exists() && !d.0.join(GOAL_RECORDINGS).exists());
         // Moved once, nothing more moves.
         assert_eq!(run(&d.0, false).unwrap(), Value::Null);

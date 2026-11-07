@@ -84,10 +84,10 @@ a disc path or archive entry (/MAPS/*.WLD, /CROCFILE.1:CROC.*; * and ?
 within a name) or format:<id>: every file of a format doc's id, or of a
 standard format (format:TIM). goal.toml's assets is true (every file),
 false, or a list of names (["format:level", "format:car"]); taking a name
-out needs the person to confirm again. A catalogue entry's assets names
-what its recordings need to replay (a level's geometry), brought in
-whatever the goal says. port_next gives a feature's before its own work and
-the goal's after the features: Format (a format: id no doc has yet, an
+out needs the person to confirm again. A scenario's assets (in its toml)
+names what its recordings need to replay (a level's geometry), brought in
+whatever the goal says. port_next gives a scenario's before its
+recordings' work and the goal's after the code: Format (a format: id no doc has yet, an
 entry of a file no doc calls an archive, or a file with no format), Index,
 Import and Check. A name that matches nothing is a problem. port_status
 counts the needed files; port_status assets=NAME lists the files a name

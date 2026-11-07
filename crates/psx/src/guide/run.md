@@ -79,8 +79,8 @@ scenario again from its state, stock and adjusted, and gives each
 quantity's first tick where they differ (adjust names one alone, to
 tell which caused it): a press taking effect a tick sooner is latch's
 cost; a value the stock game never reaches is a rule that depends on
-timing, so record that scenario stock and say why in the feature's
-notes. run with pad_reads shows where a game keeps its pad: buffer, the
+timing, so record that scenario stock and say why in the recording's
+description. run with pad_reads shows where a game keeps its pad: buffer, the
 bytes a handler stored from the latest poll; handler_copies, those it
 stored from the polls before (a driver copying a reply on a poll later,
 often the copy the game reads); copies, those the game's main code

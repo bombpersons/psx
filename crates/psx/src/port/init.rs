@@ -9,8 +9,8 @@ use crate::Error;
 use crate::commands::{Ctx, Op, Outcome};
 use crate::template::{TemplateOptions, TemplateRegion};
 
-const CATALOGUE_README: &str = include_str!("../../../../templates/port/catalogue/README.md");
-const FORMATS_README: &str = include_str!("../../../../templates/port/formats/README.md");
+pub(super) const CATALOGUE_README: &str = include_str!("../../../../templates/port/catalogue/README.md");
+pub(super) const FORMATS_README: &str = include_str!("../../../../templates/port/formats/README.md");
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortInitArgs {
@@ -166,8 +166,9 @@ impl PortInitArgs {
             .is_ok_and(|s| s.success());
         let mut next = vec![
             format!("the person starts a session (Claude Code or Codex) in {}", dest.display()),
-            "the person states the goal; the agent catalogues the features it needs and lists them in goal.toml".into(),
-            "the person reads the list (psx port confirm) and confirms it (psx port confirm --yes)".into(),
+            "the person states the goal; the agent writes it in goal.toml and records the scenarios that show it"
+                .into(),
+            "the person reads the goal (psx port confirm) and confirms it (psx port confirm --yes)".into(),
         ];
         if bios.is_empty() {
             next.push("no BIOS was linked: psx bios install in the workspace".into());

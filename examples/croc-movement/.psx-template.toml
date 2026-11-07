@@ -1,7 +1,7 @@
 # Written by `psx port init` and `psx port update`. `update` compares these hashes
 # with the files to tell untouched template files from edited ones.
 template = "base"
-psx = "0.8.0+src-d9c1bab5257b6ae2-debug"
+psx = "0.8.0+src-4f87adafb2ec02de-debug"
 package = "croc-legend-of-the-gobbos"
 region = "pal"
 fields_per_tick = 2
@@ -67,7 +67,7 @@ addons = "shell,renderer,disc-import,menus,full"
 
 [seeded]
 ".gitignore" = "sha256:13147df9e383afd5515f70b08b475a3dac32cfa42d8b353bc3d0278c495f6d45"
-"AGENTS.md" = "sha256:270395038473b44f68c1b8276301d69c20f7409980e78bacf409e4afcfbf5b25"
+"AGENTS.md" = "sha256:7a90d8e7019c861ce1d20a83518ddf0dcd65c50af3ada6a88a3babe0d40716fa"
 "Cargo.lock" = "sha256:f539e18ddb614f19f447c87d9f76aab2da00b24b596cea42599bf11b765d7523"
 "Cargo.toml" = "sha256:734d0966a9a95be81ed8048b84eba679b427aa6b7ab71a500a763d4a17595bc5"
 "README.md" = "sha256:6a9c71a2f092b158a5aac128bf915bc31d6d556124a037464ecd036aebb2e78c"
@@ -91,9 +91,9 @@ addons = "shell,renderer,disc-import,menus,full"
 "game/Cargo.toml" = "sha256:c04708e175e4e32246c9ae690c28a658d222e78a76c68aacda8b49971536c080"
 "game/build.rs" = "sha256:ab490546d51d7aeebdb0852f8f20ebd3ccb35681b028843f5c52cc061877a63d"
 "game/src/demo.rs" = "sha256:5fae864255a43ccfcb96985ab01a01411b58b326b244c8e81edfd311f5b08d6f"
-"game/src/lib.rs" = "sha256:8c0813fa128b3948bbb5ccadf169c6a62f651b6874f95fdf4b17ecc344853a14"
+"game/src/lib.rs" = "sha256:a37424c21376985c01d4ab905ba613d211f0cc20315e4420ca0306b9e6a3f29d"
 "game/src/main.rs" = "sha256:f416a63597acb58e693f7a75f76a9bbb9cb3e4823184a24ac70783850cdeaba8"
-"game/tests/scenarios.rs" = "sha256:58d41f6907cea4c813141401daf8774659a2a1fb40f6b25abbae65686fbca8c1"
+"game/tests/scenarios.rs" = "sha256:d879a14262f9220d557d0e94b68f0e7a05993857b281bfb7ced4c3daed09547f"
 "glossary/Cargo.toml" = "sha256:ccac9ef6f153118561662e88611a4654aa945d6a53faab2612f8474b184da63c"
 "glossary/src/lib.rs" = "sha256:0a1517d4da03a9427f8dea7a2342bb3b5de8be697e0588aa505df8e013c8b463"
 "psx-port.toml" = "sha256:5da2959b69b701aa983c6ab501e6a3acc03b723723f8082884e0729e6a574ec6"

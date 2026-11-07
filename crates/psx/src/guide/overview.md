@@ -23,22 +23,22 @@ code is held to; this guide says how the work goes.
 
 In a workspace, start each session with port_next: one item, why it is
 due, done_when (the fact that will show it done) and how. Do it until
-done_when holds, commit, naming the feature's id (F-0003: stomp hang), and
-call port_next again. Confirm, Wait and Stuck wait for the person: say
-what they need and stop. port_status shows every feature by
-stage; plain=true is text for the person. Without a workspace the same
-commands investigate a game: start with context.
+done_when holds, commit, saying what changed (stomp hang), and call
+port_next again. Confirm, Wait and Stuck wait for the person: say what
+they need and stop. port_status shows where the goal stands; plain=true
+is text for the person. Without a workspace the same commands
+investigate a game: start with context.
 
 ## The loop
 
-1. The person says what they want; the agent proposes the features it
-   implies and the person confirms the list.
-2. Find each feature's code: code_coverage_diff of recordings doing the
-   thing against ones not doing it, watches on the values involved,
-   disassembly and decompilation.
+1. The person says what they want; the agent writes it as the goal and
+   the person confirms it.
+2. Record the original in scenarios showing what the goal describes:
+   scripted runs, and play-throughs by the person.
 3. Name what to compare in the glossary, and where the original keeps it.
-4. Record the original in scenarios: scripted runs, and play-throughs by
-   the person.
+4. Find the code the recordings run: code_coverage_diff of recordings
+   doing the thing against ones not doing it, watches on the values
+   involved, disassembly and decompilation.
 5. Implement, reading the original's code.
 6. Compare the port with every recording, tick by tick (port_check).
 
@@ -48,44 +48,39 @@ Rules:
   When only a recording shows a rule, the citation says so.
 - Cite the address, the instruction or the recording beside each constant
   and rule, and what was not verified.
-- Hold recordings out. A feature's held_out recordings are judged only
-  once the code is reviewed; the person's play-throughs are the best ones. Their
-  results stay hidden until then: don't tune to them.
+- Hold recordings out. The person's plays (goal.toml's held_out) are
+  judged only once the code is reviewed, pass or fail; never work on
+  them or tune to them.
 - A recording that differs is not a distance to close: the rule for
-  those quantities is not understood yet, or the feature needs another
-  not done. port_check names them, not where or by how much, and points
+  those quantities is not understood yet, or other code it runs is not
+  ported. port_check names them, not where or by how much, and points
   at the code that writes them (topic code); understand that code.
-- The world a recording needs: a feature tested alone runs in a stand-in
-  world (a flat floor), and only recordings that fit it count for it. The
-  original's levels are a feature of their own.
+- The world a recording needs: a scenario in a stand-in world (a flat
+  floor) records only what fits it; the original's levels are code and
+  assets to port like any other.
 - The disc and psx are the only sources.
 
 ## The goal and the catalogue
 
-goal.toml names the features the person wants (ids, or "all"), a
-description, and the disc's assets to extract: true (every file), false, or
-a list of asset names (see Assets).
-catalogue/F-NNNN.md is one feature: TOML between +++ lines, then a
-paragraph in game terms (catalogue/README.md has the format and how fine to
-cut):
+goal.toml holds the person's description, the disc's assets to extract
+(true, every file; false; or asset names, see Assets), review_lines and
+held_out (the person's plays, scenario/name). Every other recording under
+scenarios/ is a work recording, and a scenario's toml names the assets
+its recordings need (assets = [...]).
 
-  id, title, area
-  code        the original's functions, by entry address (the inventory's),
-              and stretches of script programs (croc+0x1803..0x18A0;
-              topic code, Scripted rules), revised as you learn
-  questions   what is not known yet
-  assets      asset names its recordings need to replay (topic assets)
-  [recordings] work and held_out, as scenario/name
-  [wont_reach] branch address (or script position) = why no recording
-              can reach it; a range (0xSTART..0xEND, end excluded)
-              answers for its branches no recording ran
+The code to port is what the work recordings run, less
+catalogue/not_ported.toml (entry or range = why: libraries, drivers,
+code the port has its own of). Cite each function you port by address in
+game/ or tools/; a function cited nowhere is work. catalogue/ also holds
+wont_reach.toml (branch address, script position or range
+0xSTART..0xEND, end excluded = why no recording can reach it) and
+questions.md (one "- " line per open question); catalogue/README.md has
+the formats.
 
-Each function the goal's recordings run is some feature's code or in
-catalogue/not_ported.toml (entry or range = why: libraries, drivers). Features have no dependencies: a
-failure's pointer says whose code it is in. The person reviews the goal with psx port confirm and confirms it with
---yes, the wont_reach branches and their reasons included. Merging and
-splitting are edits (catalogue/README.md); the description, an asset name taken out, a
-held-out play dropped or a wont_reach changed needs confirming again.
+The person reviews the goal with psx port confirm and confirms it with
+--yes, the wont_reach branches and their reasons included; the
+description, an asset name taken out, a play dropped or a wont_reach
+changed needs confirming again.
 
 ## Recordings
 
@@ -179,70 +174,74 @@ psx-port.toml, replays each recording through it and writes the verdicts.
 
 ## Status and next
 
-A feature's stages, each holding with those before it:
+The goal's state, each holding with those before it:
 
-- catalogued: it has an entry.
-- located: its entry names its code.
-- recorded: work recordings, their scenarios deterministic, their coverage
-  counted against the inventory.
 - matching: every work recording passes at HEAD.
-- reviewed: every branch of its code taken both ways (by its recordings
-  or the other features' passing ones) or a confirmed wont_reach, no
-  question open, the code its recordings run claimed or not ported, its
-  assets settled, and the review holds.
-- done: its held-out recordings pass.
+- finished: every branch of the code to port taken both ways or a
+  confirmed wont_reach, no question open, no function cited nowhere.
+- reviewed: the review holds and the assets are settled.
+- complete: the goal confirmed, the person's plays pass and nothing left
+  turned off.
+
+port_status gives three shares: recordings passing, code cited or not
+ported, branches resolved.
 
 port_next's items, in this order:
 
-- Read: the person answered a play request.
+- Read: the person answered a play request; debug files to read.
+- Fix: C in decomp/ that passed its code check fails now.
 - Catalogue: goal.toml or the catalogue has problems; fix them.
 - Confirm (person): the goal is unconfirmed or changed since; until it
-  is, only investigate and catalogue.
-- Format, Index, Import, Check: a feature's assets, before its work.
-- Build: the port has no launcher for a scenario kind, or does not observe
-  a compared quantity.
+  is, only investigate and record.
+- Review: findings without an answer, a review that does not read, or
+  review_lines lines of the code (game/, tools/) changed since the last
+  (goal.toml, 800 by default).
+- Format, Index, Import, Check: a scenario's assets, before its work.
+- Build: the port has no launcher for a scenario kind, or does not
+  observe a compared quantity.
 - Unpack: overlays the inventory knows only from code that ran in them.
-- Locate: the entry names no code.
-- Record: its recordings are not ready.
-- Implement: no port_check has judged it at HEAD.
-- Fix: a recording fails, with its quantities and the pointer; once
-  it draws, compare the screens (scenario_show screens=true).
+- Record: a recording not ready, or one made before the pad latched.
+- Implement: no port_check has judged HEAD.
+- Fix: a recording fails (the one worked on, else the earliest to
+  differ), with its quantities and the pointer; once the port draws,
+  compare the screens (scenario_show screens=true).
+- Restore: a system turned off (a scenario's [off]) that the port's code
+  now cites.
 - Answer: an open question.
-- Locate: functions its recordings run in no feature's code or
-  not_ported.toml.
-- Cover: a branch its recordings (and the other features' that pass at
-  HEAD) never took one way, or script never read or a decision's way
-  never taken: record it, ask the person to play it, or list it under
-  wont_reach.
+- Locate: functions the work recordings run that are cited nowhere and
+  not in not_ported.toml.
+- Cover: a branch never taken one way, or script never read or a
+  decision's way never taken: record it, ask the person to play it, or
+  list it in wont_reach.toml.
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (the goal's assets): see Assets.
-- Review: a feature matched or finished since the last review and the
-  code (game/, tools/) has no review that holds, or review_lines lines of
-  it changed since (goal.toml, 800 by default); also findings without an
-  answer. It asks whether one would write a new game like this, and
-  whether the features cover the goal's description. how is the brief
-  for a reviewer who did not write it, who also files a report for the person alone (report). review.md: TOML
-  front matter (commit, features, finished) between +++ lines, then one
-  ## heading per finding, each answered with an **Answer:** line: done,
-  with port_check passing again, or kept and why.
-- Play (person): a feature without held-out recordings, the code
-  reviewed: start scenario_play; name its recording under held_out.
-  Then the goal's own, from its description (goal.toml's held_out).
-- Done: every feature done, and the goal's plays pass.
+- Review: the goal matching or finished since the last review, and no
+  review holds for the code as it is. It asks whether one would write a
+  new game like this, and whether the recordings show all the
+  description asks. how is the brief for a reviewer who did not write
+  it, who also files a report for the person alone (report). review.md:
+  TOML front matter (commit, matching, finished) between +++ lines, then
+  one ## heading per finding, each answered with an **Answer:** line:
+  done, with port_check passing again, or kept and why.
+- Play (person): the goal reviewed and no play of the person's held out:
+  start scenario_play and name it under held_out. A play that fails
+  gives Implement or Fix for the code it runs.
+- Restore: systems still turned off, once the plays pass.
+- Done: the goal complete.
 - Wait (person): only unanswered play requests are left.
 - Stuck (person): the same item three times with nothing changed.
 
 Verdicts are psx's (.psx/verdicts/, never edited). A verdict counts only
 for the commit it judged with no uncommitted changes, so commit, then
-port_check (optionally one feature).
+port_check (optionally one scenario).
 
 ## Assets
 
 Each disc file but the code is unknown, format found, imported, checked or
 unused (topic assets has each state, and archives). Asset names pick what
-is extracted (topic assets): goal.toml's for the person's choice, an
-entry's for what its recordings need, which port_next gives before the
-feature's work: Format, Index, Import, Check. Only the importers read the
+is extracted (topic assets): goal.toml's for the person's choice, a
+scenario's for what its recordings need, which port_next gives before
+their work: Format, Index, Import, Check. Only the importers read the
 original's formats; the game reads the port's own.
 
 ## Commands

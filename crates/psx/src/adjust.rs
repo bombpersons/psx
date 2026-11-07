@@ -26,8 +26,8 @@
 //!
 //! **off**: functions the scenario names (`[off]` in its `.toml`) return at
 //! once, with the value given, when the CPU reaches their entry: systems
-//! the port does not have yet (enemies, a cutscene trigger), so a feature's
-//! recordings hold only what it ports. Unlike latch and steady it changes
+//! the port does not have yet (enemies, a cutscene trigger), so a
+//! recording holds only what the port has. Unlike latch and steady it changes
 //! the game itself, which the recording says (`producer.details.off`).
 //!
 //! **fix**: the agent's replacements (`fixes/`, built for the R3000) of the

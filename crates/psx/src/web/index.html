@@ -13,9 +13,8 @@
   /* The charts' own series colours, apart from the status colours above:
      neighbours in a stack stay apart for colour-blind eyes too (checked
      per theme against its panel), no pair under CIEDE2000 21.
-     st0 is the stage before any colour. lane-l: the lightness of the
-     features' own hues in "Features over time". */
-  --st0: #a3a29c; --st1: #2a78d6; --st2: #ec93bf; --st3: #eda100; --st4: #b128bd; --st5: #1baf7a; --lane-l: 42%;
+     st0 is the total behind a share. */
+  --st0: #a3a29c; --st1: #2a78d6; --st2: #ec93bf; --st3: #eda100; --st4: #b128bd; --st5: #1baf7a;
 }
 /* Themes: the system's light or dark unless one is picked (data-theme). */
 @media (prefers-color-scheme: dark) {
@@ -23,14 +22,14 @@
     --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
     --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
     --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
-    --st0: #6b6b66; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70; --lane-l: 62%;
+    --st0: #6b6b66; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70;
   }
 }
 :root[data-theme=dark] {
   --bg: #151515; --panel: #1e1e1e; --ink: #e8e8e4; --dim: #9a9a94; --line: #2f2f2d;
   --accent: #6ea0ff; --port: #f0a050; --act: #ff6b61; --warn: #e3b04b; --info: #79b591; --ok: #5cc28a;
   --chip: #2a2a28; --sel: #23324a; --violet: #a888e8;
-  --st0: #6b6b66; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70; --lane-l: 62%;
+  --st0: #6b6b66; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70;
   color-scheme: dark;
 }
 :root[data-theme=light] { color-scheme: light; }
@@ -40,7 +39,7 @@
   --bg: #0a0d26; --panel: #13183a; --ink: #e7e9f7; --dim: #8e94c4; --line: #262c5c;
   --accent: #6f9cf0; --port: #f0a050; --act: #f0525a; --warn: #e8c15a; --info: #e58fd0; --ok: #41c49a;
   --chip: #1d2350; --sel: #232c6a; --violet: #e58fd0;
-  --st0: #75787f; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70; --lane-l: 62%;
+  --st0: #75787f; --st1: #3987e5; --st2: #dd3cc2; --st3: #c98500; --st4: #d9c3ff; --st5: #199e70;
   color-scheme: dark;
 }
 :root[data-theme=ps] body { background: radial-gradient(ellipse at top, #18205a 0%, var(--bg) 60%) fixed; }
@@ -213,14 +212,8 @@ body.logv main { padding-bottom: 0; }
 .recent .t { color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .recent .x { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; }
 /* reviews */
-.gantt { display: grid; grid-template-columns: 72px minmax(0, 1fr) 150px; gap: 3px 8px; align-items: center; font-size: 12px; }
-.gantt .lane { position: relative; height: 14px; background: var(--chip); border-radius: 3px; }
-.gantt .lane i { position: absolute; top: 3px; height: 8px; border-radius: 4px; opacity: .55; }
-.gantt .lane b { position: absolute; top: 1px; width: 2px; height: 12px; border-radius: 1px; }
-.gantt .axis { grid-column: 2; display: flex; justify-content: space-between; color: var(--dim); }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--dim); margin: 2px 0 6px; }
 .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; background: var(--c); }
-canvas.chart.tall { height: 170px; }
 .revgrid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 12px; align-items: start; }
 @media (max-width: 1150px) { .revgrid { grid-template-columns: 1fr; } .revgrid .rounds { max-height: 240px; overflow: auto; } }
 .rounds .rd { padding: 7px 9px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
@@ -419,7 +412,7 @@ function tabs() {
     const mail = S.msgs[i]?.unread && !(i === S.cur && S.chatOpen) ? `<span class="mail" title="unread messages from the agent">✉ ${S.msgs[i].unread}</span>` : "";
     return `<div class="proj ${i === S.cur && S.view !== "requests" ? "on" : ""}" data-i="${i}" title="${esc(p.root)}">
       <div class="pn"><span class="dot ${worst(i)}"></span><b>${esc(p.name)}</b>${mail}</div>
-      ${n?.item ? `<div class="pi">next: ${esc(n.item)}${n.feature ? " " + esc(n.feature) : ""}${n.who === "person" ? " · yours" : ""}</div>` : ""}
+      ${n?.item ? `<div class="pi">next: ${esc(n.item)}${n.recording ? " " + esc(n.recording) : ""}${n.who === "person" ? " · yours" : ""}</div>` : ""}
       ${att.map(a => `<div class="pa ${a.level}" data-v="${esc(a.view || "overview")}" title="${esc(a.detail)}">${esc(a.title)}</div>`).join("")}</div>`;
   };
   $("#side").innerHTML = `<button class="proj ${S.view === "requests" ? "on" : ""}" id="reqtab" title="play the game, and the agents' play requests across projects"><div class="pn"><b>Play</b><span class="n">${queued || ""}</span></div></button>
@@ -491,14 +484,14 @@ function overview() {
   } else if (st) {
     const n = st.next || {};
     const next = `<div class="card next"><h2>Next</h2>
-      <div><span class="item">${esc(n.item)}${n.feature ? " " + esc(n.feature) : ""}</span><span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who)}</span></div>
+      <div><span class="item">${esc(n.item)}${n.recording ? " " + esc(n.recording) : ""}</span><span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who)}</span></div>
       <div style="margin-top:6px">${esc(n.why)}</div>
       ${n.how ? `<details><summary>how</summary><div style="margin-top:4px">${esc(n.how)}</div></details>` : ""}
       ${n.done_when ? `<details><summary>done when</summary><div style="margin-top:4px">${esc(n.done_when)}</div></details>` : ""}
-      ${st.guard && st.guard.item.trim() === `${n.item} ${n.feature || ""}`.trim() ? `<div class="quiet" style="margin-top:6px">port next gave “${esc(st.guard.item.trim())}” ${st.guard.count}× in a row (Stuck at ${st.guard.limit})</div>` : ""}
+      ${st.guard && st.guard.item.trim() === `${n.item} ${n.recording || ""}`.trim() ? `<div class="quiet" style="margin-top:6px">port next gave “${esc(st.guard.item.trim())}” ${st.guard.count}× in a row (Stuck at ${st.guard.limit})</div>` : ""}
     </div>`;
     h += `<div class="ovgrid"><div class="col">${next}<div class="card"><h2>Attention</h2>${attentionList(o)}</div></div>
-      <div class="col">${progressCard(o, st)}${recent}</div><div class="wide">${featuresCard(st)}</div></div>`;
+      <div class="col">${progressCard(o, st)}${recent}</div><div class="wide">${recordingsCard(st)}</div></div>`;
   }
   $("#view").innerHTML = h;
   drawProgress(o);
@@ -520,16 +513,14 @@ function attentionList(o) {
   const last = o.last_call ? `<div class="quiet" style="margin-top:6px">last call ${ago(o.now - o.last_call)} ago${o.last_commit ? ` · last commit ${ago(o.now - o.last_commit)} ago` : ""}</div>` : "";
   return (a.length ? a.map(x => `<div class="att ${x.level}"><div>${esc(x.title)}</div><div class="d">${esc(x.detail)}</div></div>`).join("") : `<div class="quiet">Nothing needs you.</div>`) + last;
 }
-function featuresOf(st) { return Object.entries(st.areas || {}).flatMap(([area, fs]) => fs.map(f => ({...f, area}))); }
 function progressCard(o, st) {
-  const fs = featuresOf(st);
-  const sum = k => fs.reduce((s, f) => s + (f[k]?.pass ?? f[k]?.resolved ?? 0), 0);
-  const tot = k => fs.reduce((s, f) => s + (f[k]?.total ?? 0), 0);
-  const stages = Object.entries(st.stages || {}).map(([k, v]) => `${v} ${k}`).join(" · ");
+  const sh = st.shares || {}, w = st.recordings?.work || {};
+  const share = k => sh[k] ? `${num(sh[k].n)}/${num(sh[k].of)}` : "–";
   const tiles = [
-    [fs.length, "goal features", stages],
-    [`${sum("work")}/${tot("work")}`, "work recordings pass"],
-    [`${sum("branches")}/${tot("branches")}`, "branches resolved"],
+    [st.state ?? "–", "goal", "working, matching, finished, reviewed or complete"],
+    [`${w.pass ?? "–"}/${w.total ?? 0}`, "work recordings pass"],
+    [share("code_accounted"), "code cited or not ported"],
+    [share("branches_resolved"), "branches resolved"],
     [(st.problems || []).length, "problems"],
     [st.review?.state ?? "–", "review"],
   ];
@@ -539,16 +530,22 @@ function progressCard(o, st) {
     <div class="quiet" style="margin-top:4px">${p.length} changes since ${fmtDate(p[0].t)} · each line is a port status or port next that saw the standing change</div>`
     : `<div class="quiet">History builds up as port status and port next see the standing change.</div>`}</div>`;
 }
-function featuresCard(st) {
-  const fs = featuresOf(st);
-  const row = f => {
-    const w = f.work || {}, b = f.branches || {};
-    const pct = (a, t) => t ? Math.round(100 * a / t) : 0;
-    return `<tr><td class="mono">${esc(f.id)}</td><td>${esc(f.title)}</td><td>${esc(f.stage)}</td><td>${esc(f.verdict)}</td>
-      <td class="num">${w.pass ?? "–"}/${w.total ?? 0}</td><td><div class="bar"><i style="width:${pct(b.resolved, b.total)}%"></i></div></td><td class="num">${b.resolved ?? 0}/${b.total ?? 0}</td>
-      <td class="num">${(f.questions || []).length || ""}</td></tr>`;
-  };
-  return `<div class="card"><h2>Features</h2><table><tr><th>id</th><th>title</th><th>stage</th><th>verdict</th><th class="num">work</th><th colspan="2">branches</th><th class="num">questions</th></tr>${fs.map(row).join("")}</table></div>`;
+// The goal's recordings by state, its code and its three shares.
+function recordingsCard(st) {
+  const r = st.recordings || {}, w = r.work || {}, h = r.held_out || {}, sh = st.shares || {}, c = st.code || {};
+  const pct = (a, t) => t ? Math.round(100 * a / t) : 0;
+  const bar = (l, s, t) => s ? `<tr title="${esc(t)}"><td class="quiet">${esc(l)}</td><td><div class="bar"><i style="width:${pct(s.n, s.of)}%"></i></div></td><td class="num">${num(s.n)}/${num(s.of)}</td></tr>` : "";
+  const rows = [
+    ["work", !w.total ? "none yet" : w.pass == null ? `${num(w.total)}, not all checked at this commit` : `${w.pass} passing, ${w.fail ?? 0} failing, of ${num(w.total)}`],
+    ["held out", h.total ? (h.pass != null ? `${h.pass} passing, of ${h.total}` : `${h.total}, shown ${esc(h.shown || "")}`) : "none"],
+    ["code", c.ran != null ? `${num(c.ran)} functions ran: ${num(c.cited)} cited, ${num(c.not_ported)} not ported, ${num(c.uncited)} cited nowhere` : "–"],
+    ["questions", (st.questions || []).length || "none"],
+  ];
+  return `<div class="card"><h2>Recordings</h2><table>${rows.map(([k, v]) => `<tr><td class="quiet">${k}</td><td colspan="2">${v}</td></tr>`).join("")}
+    ${bar("recordings passing", sh.recordings_passing, "work passing, and held-out passing once the goal is reviewed")}
+    ${bar("code accounted", sh.code_accounted, "functions the work recordings run, cited in game/ or tools/ or listed in not_ported.toml")}
+    ${bar("branches resolved", sh.branches_resolved, "branches of the code to port, run both ways or in wont_reach.toml")}</table>
+    ${(w.failing || []).length ? `<div class="warnbox">${w.failing.map(esc).join("<br>")}</div>` : ""}</div>`;
 }
 function drawProgress(o) {
   const p = o.progress || [];
@@ -621,7 +618,7 @@ const POS = {ram_diff: ["a", "b"], assets_diff: ["a", "b"], ram_search: ["snapsh
   disc_extract: ["image", "path"], disc_exe: ["source"], assets_memcard: ["image"], disc_sector: ["image", "lba"], assets_textures: ["run_dir"],
   states_save: ["source", "name"], states_rebuild: ["names*"], code_disasm: ["source"], code_xrefs: ["target"], code_symbols: ["source"],
   assets_scan: ["source"], assets_extract: ["source"], run: ["media"], scenario_record: ["id"], scenario_check: ["ids*"], scenario_show: ["id"],
-  port_check: ["feature*"], port_init: ["dest"]};
+  port_check: ["scenario"], port_init: ["dest"]};
 function argsText(x) {
   const a = Array.isArray(x.args) ? argv(x.args) : x.args;
   if (Array.isArray(a)) return a.slice(cmdLen(a, x.tool)).map(s => /\s/.test(s) ? JSON.stringify(s) : s).join(" ");
@@ -695,7 +692,7 @@ const TITLE = {
   scenario_show: x => `${arg(x, "id") || ""}/${arg(x, "name") || ""}`, scenario_record: x => `${arg(x, "id") || ""}/${arg(x, "name") || ""}`,
   scenario_check: x => list(arg(x, "ids")).join(", ") || "every scenario",
   scenario_play: x => arg(x, "status") ? "status of " + unroot(arg(x, "status")).replace(/^\.psx\/(handoffs|plays)\//, "") : arg(x, "request") || "",
-  port_update: x => arg(x, "dry_run") ? "dry run" : "", port_check: x => list(arg(x, "feature")).join(", "), port_init: x => unroot(arg(x, "dest")),
+  port_update: x => arg(x, "dry_run") ? "dry run" : "", port_check: x => arg(x, "scenario") || "", port_init: x => unroot(arg(x, "dest")),
   message: x => (arg(x, "text") ? (arg(x, "reply_to") ? "reply: " : "") + arg(x, "text") : waits(x) ? "" : "read the threads") + (waits(x) ? (arg(x, "text") ? " · then waits for your answer" : "waits for you to write") : ""),
 };
 // A CLI call with --wait (only the CLI takes it).
@@ -1017,21 +1014,19 @@ const CARDS = {
     }).join("");
   },
   port_status(r) {
-    const fs = Object.values(r.areas || {}).flat();
-    const n = r.next || {};
-    return nextBlock(n) + stats([stat(fs.length, "features"), stat(Object.entries(r.stages || {}).map(([k, v]) => `${v} ${k}`).join(", ") || "–", "stages"), stat((r.problems || []).length, "problems"), stat(r.review?.state || "–", r.review?.lines != null ? `review · ${num(r.review.lines)} of ${num(r.review.review_lines)} lines` : "review")]) +
-      tbl(["", "feature", "stage", "verdict", "work recordings passing", "branches resolved"], fs.map(f => [mono(f.id), esc(f.title), esc(f.stage), pill(f.verdict, f.verdict === "pass" ? "ok" : f.verdict === "fail" ? "bad" : "warn"),
-        f.work ? `${f.work.pass ?? "–"} of ${num(f.work.total)}` : "", f.branches ? `${num(f.branches.resolved)} / ${num(f.branches.total)} <span class="quiet">${Math.round(pct(f.branches.resolved, f.branches.total))}%</span>` : ""])) +
-      warnings((r.problems || []).map(p => typeof p === "string" ? p : p.text || p.message || JSON.stringify(p)));
+    const w = r.recordings?.work || {}, sh = r.shares || {};
+    const share = k => sh[k] ? `${num(sh[k].n)} / ${num(sh[k].of)} <span class="quiet">${Math.round(pct(sh[k].n, sh[k].of))}%</span>` : "–";
+    return nextBlock(r.next || {}) + stats([stat(r.state || "–", "goal"), stat(`${w.pass ?? "–"} of ${num(w.total || 0)}`, "work recordings passing"), stat((r.problems || []).length, "problems"), stat(r.review?.state || "–", r.review?.lines != null ? `review · ${num(r.review.lines)} of ${num(r.review.review_lines)} lines` : "review")]) +
+      tbl(["share", ""], [["recordings passing", share("recordings_passing")], ["code cited or not ported", share("code_accounted")], ["branches resolved", share("branches_resolved")]]) +
+      warnings([...(w.failing || []), ...(r.problems || []).map(p => typeof p === "string" ? p : p.text || p.message || JSON.stringify(p))]);
   },
   port_next(r) { return nextBlock(r); },
   port_check(r) {
-    return lead(`at ${mono(String(r.commit || "").slice(0, 10))}`) + (r.verdicts || []).map(v => {
-      const work = Object.entries(v.work || {});
-      return `<div style="margin-top:4px"><b class="mono">${esc(v.feature)}</b> ${pill(v.passed ? "passes" : "fails", v.passed ? "ok" : "bad")}${v.held_out ? ` <span class="quiet">${v.held_out} held out</span>` : ""}</div>
-        <div class="chips" style="margin-top:3px">${work.map(([name, f]) => `<span class="pill ${f.length ? "bad" : "ok"}" title="${esc(f.join("\n"))}">${esc(name)}${f.length ? ` · ${f.length}` : ""}</span>`).join("")}</div>
-        ${(v.failures || []).length ? `<div class="warnbox">${v.failures.map(esc).join("<br>")}</div>` : ""}${work.filter(([, f]) => f.length).slice(0, 3).map(([n, f]) => note(`${n}: ${f[0]}`)).join("")}`;
-    }).join("") + (r.assets ? note(`assets: ${r.assets.imported} imported, ${r.assets.checked} checked${(r.assets.failures || []).length ? `, ${r.assets.failures.length} failed` : ""}`) : "");
+    const v = r.verdict || {}, w = v.work || {};
+    return lead(`at ${mono(String(r.commit || "").slice(0, 10))} ${pill(v.passed ? "passes" : "fails", v.passed ? "ok" : "bad")} <span class="quiet">${w.pass ?? "–"} of ${num(w.total || 0)} work recordings${v.held_out ? `, ${v.held_out} held out` : ""}</span>`) +
+      (v.failing || []).slice(0, 5).map(f => note(`${f.recording}: ${(f.differs || [])[0] || "fails"}`)).join("") +
+      ((v.failures || []).length ? `<div class="warnbox">${v.failures.map(esc).join("<br>")}</div>` : "") +
+      (r.assets ? note(`assets: ${r.assets.imported} imported, ${r.assets.checked} checked${(r.assets.failures || []).length ? `, ${r.assets.failures.length} failed` : ""}`) : "");
   },
   port_init(r) { return rest(r, []); },
   port_update(r) {
@@ -1045,7 +1040,7 @@ const CARDS = {
 const ver = v => { const m = String(v || "").match(/[0-9a-f]{12,}/); return m ? m[0].slice(0, 9) : String(v || "?"); };
 function nextBlock(n) {
   if (!n || !n.item) return "";
-  return lead(`<b style="font-size:15px">${esc(n.item)}${n.feature ? " " + esc(n.feature) : ""}</b> <span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who || "")}</span>`) +
+  return lead(`<b style="font-size:15px">${esc(n.item)}${n.recording ? " " + esc(n.recording) : ""}</b> <span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who || "")}</span>`) +
     `<div class="text">${esc(unroot(n.why || ""))}</div>` +
     (n.how ? `<details><summary>how</summary><div class="text">${esc(unroot(n.how))}</div></details>` : "") +
     (n.done_when ? `<details><summary>done when</summary><div class="text">${esc(unroot(n.done_when))}</div></details>` : "");
@@ -2023,7 +2018,7 @@ function drawReviews() {
     const fs = r.findings.filter(f => !only || f.new);
     const vs = r.versions.map(v => v.commit ? `<span title="${esc(v.subject)}">${esc(v.commit.slice(0, 7))} ${esc(v.subject.length > 70 ? v.subject.slice(0, 70) + "…" : v.subject)}</span>` : "uncommitted").join("<br>");
     body = `<div class="card"><h2>${pick.k ? "Follow-up" : "Review"} ${pick.k + 1} · of ${esc(r.reviewed.slice(0, 7))}</h2>
-      ${kv([["features matching", r.features.length ? r.features.map(esc).join(", ") : null], ["finished", r.finished.length ? r.finished.map(esc).join(", ") : null], ["review.md in", vs],
+      ${kv([["goal", r.finished ? "finished" : r.matching ? "matching" : "working"], ["review.md in", vs],
         ["reads", prev ? `the changes since ${esc(prev.reviewed.slice(0, 7))} <button class="b" data-act="rev-diff">${S.revs.diff ? "hide" : "show"} the diff</button>` : "the code as a whole"]])}
       ${S.revs.diff ? `<div class="code diff" style="max-height:520px;margin-top:8px">${S.revs.diff}</div>` : ""}
       ${pick.k ? `<label class="quiet" style="display:block;margin-top:8px"><input type="checkbox" id="rev-new" ${only ? "checked" : ""}> only the findings this round added</label>` : ""}
@@ -2047,9 +2042,9 @@ function drawReviews() {
 
 // ------------------------------------------------------------ stats
 // How the port came along: its standing over time (progress.jsonl), the
-// agents' calls by hour, the commits by day and by feature, and where the
-// time went (tools, sessions).
-const STAGES = [["catalogued", "--st0"], ["located", "--st1"], ["recorded", "--st2"], ["matching", "--st3"], ["reviewed", "--st4"], ["done", "--st5"]];
+// agents' calls by hour, the commits by day, and where the time went
+// (tools, sessions).
+const STATES = [["working", "--st1"], ["matching", "--st3"], ["finished", "--st2"], ["reviewed", "--st4"], ["complete", "--st5"]];
 const DAY = 86400000, HOUR = 3600000;
 async function statsView(refresh) {
   const i = S.cur;
@@ -2069,56 +2064,34 @@ function dayOf(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getT
 function drawStats() {
   const d = S.stats.data, c = d.calls, git = d.git || [], prog = d.progress || [];
   const st = S.overview[S.cur]?.status;
-  const feats = new Map((st ? featuresOf(st) : []).map(f => [f.id, f]));
   const sum = (xs, k) => xs.reduce((a, x) => a + (x[k] || 0), 0);
   const calls = sum(c.hours, "calls"), failed = sum(c.hours, "failed");
   const code = git.reduce((a, g) => a + g.code[0] - g.code[1], 0);
   const t0 = Math.min(git[0]?.t ?? Infinity, c.hours[0]?.t ?? Infinity, prog[0]?.t ?? Infinity);
   const tiles = [
     [isFinite(t0) ? Math.max(1, Math.ceil((d.now - t0) / DAY)) : "–", "days", isFinite(t0) ? "since " + fmtDate(t0) : ""],
-    [num(git.length), "commits", `${git.filter(g => g.features.length).length} name a feature`],
+    [num(git.length), "commits"],
     [num(code), "lines of code", "added less removed in game/ and tools/"],
     [num(calls), "psx calls", `${num(failed)} failed`],
     [num(c.hours.length), "hours with calls"],
     [dur(sum(c.tools, "ms")), "in psx calls"],
-    ...(st?.shares ? [["recordings_passing", "goal recordings passing", "each counted once; a held-out one once its feature is reviewed"],
-      ["code_accounted", "goal code claimed or not ported", "functions the goal's recordings run that a feature claims or not_ported.toml lists"],
-      ["branches_resolved", "claimed branches resolved", "each branch of the claimed code once, resolved by any feature"]]
+    ...(st?.shares ? [["recordings_passing", "goal recordings passing", "the work recordings passing, and the held-out ones once the goal is reviewed"],
+      ["code_accounted", "code cited or not ported", "functions the work recordings run that game/ or tools/ cite or not_ported.toml lists"],
+      ["branches_resolved", "branches resolved", "branches of the code to port run both ways or in wont_reach.toml"]]
       .map(([k, l, t]) => [`${num(st.shares[k].n)} of ${num(st.shares[k].of)}`, l, t]) : []),
     ...(d.decomp ? [[num(d.decomp.named), "functions named", "in names/ and .psx/names/"],
       [`${num(d.decomp.passing)} of ${num(d.decomp.in_c)}`, "functions in C pass", "their last code check, on the current C and names"]] : []),
   ];
   let h = `<div class="card"><h2>Stats</h2><div class="tiles">${tiles.map(([n, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div></div>`;
   // The standing over time.
-  h += `<div class="card"><h2>Features by stage</h2>${prog.length > 1
-    ? `<div class="legend">${STAGES.map(([k, v]) => `<span style="--c:var(${v})">${k}</span>`).join("")}</div><canvas class="chart tall" id="st-stage"></canvas>
-       <div class="grid2" style="margin-top:8px"><div><div class="quiet">recordings passing, of all</div><canvas class="chart" id="st-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="st-br"></canvas></div><div><div class="quiet">code claimed or not ported, of all the goal runs</div><canvas class="chart" id="st-code-acc"></canvas></div></div>
+  h += `<div class="card"><h2>The goal over time</h2>${prog.length > 1
+    ? `<div class="legend">${STATES.map(([k, v]) => `<span style="--c:var(${v})">${k}</span>`).join("")}</div><canvas class="chart" id="st-state"></canvas>
+       <div class="grid2" style="margin-top:8px"><div><div class="quiet">recordings passing, of all</div><canvas class="chart" id="st-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="st-br"></canvas></div><div><div class="quiet">code cited or not ported, of all the work recordings run</div><canvas class="chart" id="st-code-acc"></canvas></div></div>
        <div class="quiet" style="margin-top:4px">${prog.length} changes since ${fmtDate(prog[0].t)}, as port status and port next saw them</div>`
     : `<div class="quiet">This builds up as port status and port next see the standing change (from this version of psx on). The commits below go back to the start.</div>`}</div>`;
   // Activity.
   h += `<div class="card"><h2>Activity</h2><div class="grid2"><div><div class="legend"><span style="--c:var(--dim)">psx calls</span><span style="--c:var(--act)">failed</span></div><canvas class="chart" id="st-calls"></canvas></div>
     <div><div class="legend"><span style="--c:var(--ok)">code lines added</span><span style="--c:var(--act)">removed</span><span>commits over each day</span></div><canvas class="chart" id="st-code"></canvas></div></div></div>`;
-  // Features by their commits.
-  const byF = new Map();
-  for (const g of git) for (const f of g.features) { if (!byF.has(f)) byF.set(f, []); byF.get(f).push(g); }
-  for (const id of feats.keys()) if (!byF.has(id)) byF.set(id, []);
-  const ids = [...byF.keys()].sort((a, b) => (byF.get(a)[0]?.t ?? Infinity) - (byF.get(b)[0]?.t ?? Infinity) || a.localeCompare(b));
-  if (ids.length && git.length) {
-    const a = git[0].t, b = Math.max(d.now, git.at(-1).t), X = t => (100 * (t - a) / Math.max(1, b - a)).toFixed(2);
-    // Each feature its own hue, a golden angle on from the row above, so
-    // neighbours differ however many there are and whatever their stages.
-    const color = n => `hsl(${(n * 137.508 + 210) % 360} 65% var(--lane-l))`;
-    const rows = ids.map((id, n) => {
-      const gs = byF.get(id), f = feats.get(id), col = color(n);
-      const lines = gs.reduce((s, g) => s + g.code[0] + g.code[1], 0);
-      const bar = gs.length ? `<i style="left:${X(gs[0].t)}%;width:max(2px,${(X(gs.at(-1).t) - X(gs[0].t)).toFixed(2)}%);background:${col}"></i>` : "";
-      const ticks = gs.map(g => `<b style="left:${X(g.t)}%;background:${col}" title="${esc(g.h)} ${fmtDate(g.t)}: ${esc(g.subject)}"></b>`).join("");
-      return `<span class="mono" title="${esc(f?.title || "")}">${esc(id)}</span><div class="lane">${bar}${ticks}</div>
-        <span class="quiet" title="${num(lines)} code lines changed${f ? "" : "; not among the port's features now"}">${gs.length} commit${gs.length === 1 ? "" : "s"}, ${f ? esc(f.stage || "") : "gone"}</span>`;
-    }).join("");
-    h += `<div class="card"><h2>Features over time</h2><div class="quiet" style="margin-bottom:6px">Each mark a commit naming the feature (hover for it), each feature in its own colour, with its stage now at the end. ${git.length - git.filter(g => g.features.length).length} commits name none.</div>
-      <div class="gantt">${rows}<span></span><div class="axis"><span>${fmtDate(a)}</span><span>${fmtDate(b)}</span></div></div></div>`;
-  }
   // Where the time went.
   const tools = [...c.tools].sort((x, y) => y.ms - x.ms);
   const ses = [...c.sessions].sort((x, y) => y.last - x.last);
@@ -2133,9 +2106,10 @@ function drawStats() {
 
   if (prog.length > 1) {
     const ts = prog.map(x => x.t);
-    statStacked($("#st-stage"), ts, d.now, STAGES.map(([k, v]) => [x => x.stages?.[k] || 0, css(v)]), prog);
-    // The goal's shares where the line has them (counted once across
-    // features), the features' sums before.
+    // The goal's state, one band of the chart's height at a time.
+    statStacked($("#st-state"), ts, d.now, STATES.map(([k, v]) => [x => x.state === k ? 1 : 0, css(v)]), prog);
+    // The goal's shares where the line has them, the recordings' and
+    // branches' sums before.
     const sh = (x, k, i) => x.shares?.[k]?.[i];
     statLines($("#st-rec"), ts, d.now, prog, [[x => sh(x, "recordings_passing", "n") ?? x.recordings?.pass, css("--st5")], [x => sh(x, "recordings_passing", "of") ?? x.recordings?.total, css("--st0")]]);
     statLines($("#st-br"), ts, d.now, prog, [[x => sh(x, "branches_resolved", "n") ?? x.branches?.resolved, css("--st1")], [x => sh(x, "branches_resolved", "of") ?? x.branches?.total, css("--st0")]]);

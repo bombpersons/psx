@@ -4,8 +4,8 @@
 //! runs the game itself. `tests/scenarios.rs` runs the recordings here, a
 //! quick check while working.
 //!
-//! The rules live in modules of their own, one per catalogue feature, named
-//! after it; `Game` holds their state and runs them once a tick.
+//! The rules live in modules of their own, named after what they do;
+//! `Game` holds their state and runs them once a tick.
 
 /// `Observed`: the glossary's quantities as the port has them, which
 /// [`Game::observe`](Port::observe) fills for the scenarios. Generated from
@@ -54,7 +54,7 @@ pub fn tick_hz() -> f64 {
 pub struct Game {}
 
 impl Game {
-    /// A game with every feature's rules and nothing on screen, as the
+    /// A game with all its rules and nothing on screen, as the
     /// scenarios and psx's replays use it.
     pub fn headless() -> Game {
         Game::default()
