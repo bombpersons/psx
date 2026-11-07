@@ -948,7 +948,7 @@ fn key(root: &Path, l: &Loaded) -> String {
     let read = |p: &Path| std::fs::read(p).unwrap_or_default();
     let mut all = read(&root.join(SCENARIOS).join(format!("{}.toml", l.id)));
     if let Some(s) = &l.scenario {
-        all.extend(read(&root.join(&s.chain)));
+        all.extend(chain_for_key(&read(&root.join(&s.chain))));
     }
     for dir in [root.join(GLOSSARY), root.join(GLOSSARY).join("binding")] {
         all.extend(read(&dir.join("Cargo.toml")));
@@ -961,6 +961,18 @@ fn key(root: &Path, l: &Loaded) -> String {
         all.extend(read(f));
     }
     crate::stamp::sha256(&all)
+}
+
+/// A chain as a determinism check judged it: without the emulator each
+/// step was last rebuilt on, which a rebuild to the same state changes.
+fn chain_for_key(bytes: &[u8]) -> Vec<u8> {
+    let Ok(mut chain) = serde_json::from_slice::<Json>(bytes) else { return bytes.to_vec() };
+    for step in chain["steps"].as_array_mut().into_iter().flatten() {
+        if let Some(o) = step.as_object_mut() {
+            o.remove("emulator");
+        }
+    }
+    chain.to_string().into_bytes()
 }
 
 /// One scenario's determinism check: each recording made again from the
@@ -2770,6 +2782,14 @@ pub struct Quantities {
         let ok = json!({"key": key(root, &l), "result": {"status": "deterministic"}});
         std::fs::create_dir_all(root.join(CHECKS)).unwrap();
         std::fs::write(root.join(CHECKS).join("walk.json"), ok.to_string()).unwrap();
+        assert_eq!(unready(root, "walk"), Vec::<String>::new());
+        // The chain rebuilt to the same state on another emulator still stands.
+        let chain = |emulator: &str| json!({"steps": [{"emulator": emulator, "run": {"frames": 5}}]}).to_string();
+        std::fs::write(root.join("notes/states/start.json"), chain("emu-a")).unwrap();
+        let l = Loaded::load(root, "walk");
+        let ok = json!({"key": key(root, &l), "result": {"status": "deterministic"}});
+        std::fs::write(root.join(CHECKS).join("walk.json"), ok.to_string()).unwrap();
+        std::fs::write(root.join("notes/states/start.json"), chain("emu-b")).unwrap();
         assert_eq!(unready(root, "walk"), Vec::<String>::new());
         // Any change to what was judged makes the check stale.
         std::fs::write(root.join("scenarios/walk/a.jsonl"), recording(2)).unwrap();
