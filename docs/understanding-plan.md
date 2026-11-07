@@ -432,6 +432,25 @@ range in not_ported answers for library code, and moving a function
 with a confirmed wont_reach entry to another feature, or taking it out,
 asks nothing of the person.
 
+**Done** (2026-11-07). catalogue/not_ported.toml (entry or range = why;
+a key that is neither, no reason, or an entry no function starts at is a
+problem). Each feature's recordings' functions in no entry's code and not
+listed are its `unclaimed` (port status); reviewed and finished wait on
+none, and port next's Locate, after Answer for a matching feature, lists
+them by name, the pointer's first. A wont_reach confirmation is the
+key and reason under any feature, so it follows moved code; code taken
+out takes its entries (the problem says so); another feature's
+wont_reach answers by address or range for a function both list. The
+pointer's evidence names listed code on the path ("listed in
+catalogue/not_ported.toml … the rule may be there"). On GT2 at 404dbb7
+about 370 functions are unclaimed per feature, 0x800340A4 among F-0001,
+F-0006, F-0007, F-0008 and F-0010's, 2 s for port status; a range and an
+entry in not_ported take theirs out. At 0180540, update_wheel_surface_samples
+listed there shows in offroad's evidence with its reason (wheel_tyre_force
+was not on the path at this check). Moving a confirmed wont_reach is
+tested, not tried on GT2 (it has none). The guide's overview trimmed to
+stay under 16 KiB.
+
 ### 6. Merging, splitting and progress
 
 `replaces` and `from` in catalogue entries; confirmation through them;

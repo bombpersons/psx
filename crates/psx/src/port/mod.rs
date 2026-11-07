@@ -33,6 +33,9 @@ pub use next::{PortNextArgs, PortStatusArgs};
 
 pub const GOAL: &str = "goal.toml";
 pub const CATALOGUE: &str = "catalogue";
+/// The original's code no feature ports, by function or address range,
+/// with why.
+pub const NOT_PORTED: &str = "catalogue/not_ported.toml";
 
 pub(crate) const GOAL_TOML: &str = "\
 # What the person wants from this port. The agent proposes the features
@@ -369,6 +372,9 @@ pub struct Port {
     pub formats: BTreeMap<String, assets::Format>,
     /// `formats/unused.toml`: disc files the game never loads, with why.
     pub unused: BTreeMap<String, String>,
+    /// `catalogue/not_ported.toml`: the original's code no feature ports,
+    /// by function entry or address range, with why.
+    pub not_ported: BTreeMap<String, String>,
     pub problems: Vec<Problem>,
 }
 
@@ -513,7 +519,24 @@ impl Port {
             }
         }
         let (formats, unused) = assets::read_formats(root, &mut problems)?;
-        let mut port = Port { goal, entries, formats, unused, problems };
+        let not_ported = match std::fs::read_to_string(root.join(NOT_PORTED)) {
+            Ok(text) => toml::from_str::<BTreeMap<String, String>>(&text).unwrap_or_else(|e| {
+                problems.push(problem(NOT_PORTED, e.message()));
+                BTreeMap::new()
+            }),
+            Err(_) => BTreeMap::new(),
+        };
+        for (k, why) in &not_ported {
+            if entry_addr(k).is_none() && entry_range(k).is_none() {
+                problems
+                    .push(problem(NOT_PORTED, format!("{k:?} is not a function's entry (0x…) or a range (0x…..0x…)")));
+            }
+            if why.trim().is_empty() {
+                problems
+                    .push(problem(NOT_PORTED, format!("{k}: no reason: what the code is, and why the port has none")));
+            }
+        }
+        let mut port = Port { goal, entries, formats, unused, not_ported, problems };
         port.check();
         port.check_disk(root);
         Ok(port)
@@ -546,10 +569,15 @@ impl Port {
             })
             .collect();
         let loaders: Vec<&assets::Format> = self.formats.values().filter(|f| !f.loader.is_empty()).collect();
-        if !naming.is_empty() || !loaders.is_empty() {
+        if !naming.is_empty() || !loaders.is_empty() || !self.not_ported.is_empty() {
             let ctx = crate::commands::Ctx { root: root.to_path_buf(), cancel: None };
             let functions = crate::coverage::inventory(&ctx, None)
                 .and_then(|(_, inv)| crate::coverage::Functions::read(root, &inv));
+            if let Ok(fns) = &functions {
+                for k in self.not_ported.keys().filter(|k| entry_addr(k).is_some_and(|a| !fns.starts(a))) {
+                    out.push(problem(NOT_PORTED, format!("{k}: no function of the inventory starts there")));
+                }
+            }
             for f in loaders {
                 match &functions {
                     Err(err) => {
@@ -620,7 +648,7 @@ impl Port {
                         )),
                         Some(holders) if !holders.iter().any(|h| code.contains(h)) => out.push(problem(
                             f,
-                            format!("wont_reach: {a} is in {}, which code does not list", named(&holders)),
+                            format!("wont_reach: {a} is in {}, which code does not list (code taken out takes its entries; moved, they go with it)", named(&holders)),
                         )),
                         Some(_) => {}
                     }
@@ -666,6 +694,22 @@ impl Port {
             }
         }
         self.problems.extend(out);
+    }
+
+    /// Why the function at `entry` is not ported, when not_ported.toml
+    /// lists it or a range holding it.
+    pub fn not_ported(&self, entry: u32) -> Option<&String> {
+        not_ported_in(&self.not_ported, entry)
+    }
+
+    /// The features whose code lists the function at `entry`.
+    pub fn claiming(&self, entry: u32) -> Vec<&str> {
+        let entry = entry & 0x1FFF_FFFF;
+        self.entries
+            .values()
+            .filter(|e| e.code.iter().filter_map(|c| entry_addr(c)).any(|a| a & 0x1FFF_FFFF == entry))
+            .map(|e| e.id.as_str())
+            .collect()
     }
 
     /// The goal's features as ids: its list, or every catalogued feature.
@@ -799,17 +843,37 @@ impl Port {
     /// The closure's won't-reach branches the person has not confirmed as
     /// they stand (`F-0003 0x8002D820`): new, or with another reason.
     pub fn unconfirmed_wont_reach(&self) -> Vec<String> {
-        let confirmed = self.goal.confirmed.as_ref().map(|c| &c.wont_reach);
         let mut out = Vec::new();
         for (id, branches) in self.wont_reach() {
             for (a, why) in branches {
-                if confirmed.and_then(|c| c.get(&id)).and_then(|b| b.get(&a)) != Some(&why) {
+                if !self.wont_reach_agreed(&a, &why) {
                     out.push(format!("{id} {a}"));
                 }
             }
         }
         out
     }
+
+    /// The person confirmed branch `key` with reason `why`, under any
+    /// feature: an entry follows its code from one feature to another.
+    pub fn wont_reach_agreed(&self, key: &str, why: &str) -> bool {
+        let confirmed = self.goal.confirmed.as_ref().map(|c| &c.wont_reach);
+        confirmed.is_some_and(|c| c.values().any(|b| b.get(key).is_some_and(|w| w == why)))
+    }
+}
+
+/// Why the function at `entry` is not ported, by not_ported.toml's
+/// `map`: its entry or a range holding it.
+pub fn not_ported_in(map: &BTreeMap<String, String>, entry: u32) -> Option<&String> {
+    let entry = entry & 0x1FFF_FFFF;
+    map.iter().find_map(|(k, why)| {
+        let hit = match (entry_addr(k), entry_range(k)) {
+            (Some(a), _) => a & 0x1FFF_FFFF == entry,
+            (_, Some((s, e))) => (s & 0x1FFF_FFFF..e & 0x1FFF_FFFF).contains(&entry),
+            _ => false,
+        };
+        hit.then_some(why)
+    })
 }
 
 /// `goal.toml`'s text with its top-level `features` set to `ids`, on one
@@ -1011,6 +1075,29 @@ pub(crate) mod tests {
         let (_d, port) = workspace(goal, &[("F-0001.md", &entry("in a cutscene"))]);
         assert_eq!(port.unconfirmed_wont_reach(), ["F-0001 0x8002D820"]);
         assert_eq!(port.confirmation_json()["wont_reach_unconfirmed"], json!(["F-0001 0x8002D820"]));
+        // Moved with its code to another feature, the confirmation follows it.
+        let moved = entry("under water").replace("F-0001", "F-0002");
+        let goal2 = goal.replace("features = [\"F-0001\"]\n", "features = [\"F-0001\", \"F-0002\"]\n");
+        let bare = "+++\nid = \"F-0001\"\ntitle = \"Jump\"\narea = \"player\"\n+++\nWhat it does.\n";
+        let (_d, port) = workspace(&goal2, &[("F-0001.md", bare), ("F-0002.md", &moved)]);
+        assert_eq!(port.unconfirmed_wont_reach(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn not_ported_lists_functions_and_ranges_with_why() {
+        let np = "\"0x80010088\" = \"memcpy: the port has its own\"\n\"0x80050000..0x80060000\" = \"libgte\"\n\"main\" = \"x\"\n\"0x80070000\" = \" \"\n";
+        let (_d, port) = workspace("description = \"x\"\nfeatures = \"all\"\n", &[("not_ported.toml", np)]);
+        assert_eq!(port.not_ported(0x0001_0088).map(String::as_str), Some("memcpy: the port has its own"));
+        assert_eq!(port.not_ported(0x8005_8000).map(String::as_str), Some("libgte"));
+        assert_eq!(port.not_ported(0x8006_0000), None);
+        let p: Vec<&str> = port.problems.iter().filter(|p| p.file == NOT_PORTED).map(|p| p.problem.as_str()).collect();
+        assert_eq!(
+            p[..2],
+            [
+                "0x80070000: no reason: what the code is, and why the port has none",
+                "\"main\" is not a function's entry (0x…) or a range (0x…..0x…)",
+            ]
+        );
     }
 
     #[test]

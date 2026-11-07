@@ -35,8 +35,13 @@ the `[recordings]` and `[wont_reach]` tables.
   and when it has behaviour of its own. "Physics" is too coarse, "the
   friction curve" too fine.
 - `code` lists the original's functions that are the feature, by entry
-  address, found with psx (`code coverage diff`, watches): each must be a
-  function the inventory has.
+  address, found with psx (`code coverage diff`, watches, the pointer):
+  each must be a function the inventory has. It is your reading of the
+  original, revised as you learn: add a function when its quantities
+  turn out to come from it, take one out when it turns out to be
+  another's. A function may be several features' (one state machine for
+  jump and climb); its branches are covered once, by any of their
+  recordings.
 - `recordings` names the scenario recordings the feature is checked
   against, as `<scenario>/<name>`: `work` while it is built, `held_out`
   once it matches. This is the only place a feature names them; its
@@ -48,12 +53,31 @@ the `[recordings]` and `[wont_reach]` tables.
   ran, and a recording that runs one makes it a problem.
   `psx port confirm` says how many branches each range answers for. The
   person confirms them with `psx port confirm --yes`; one added or changed later
-  needs confirming again.
+  needs confirming again. Code taken out takes its entries with it, and
+  an entry moved with its code to another feature keeps its
+  confirmation.
 - `assets` names the disc files its recordings need to replay (a track, a
   level), as `goal.toml`'s `assets` names them (`formats/README.md`): psx
   asks for them to be imported and checked before the feature's own work,
   whatever the goal says about the rest of the disc.
 - `questions` lists what is not known yet.
+
+## Code no feature ports
+
+Every function the goal's recordings run is some feature's code or listed
+in `not_ported.toml`, by entry or address range (the end excluded), with
+why:
+
+```toml
+"0x80010088" = "memcpy: the port has its own"
+"0x80050000..0x80058000" = "libgte's helpers: the port does its own maths"
+```
+
+Library code, the CD and sound drivers, the GPU's command building and
+debug code go here; the port has its own of those, or none. A feature is
+reviewed only once the code its recordings run is all accounted for. When
+code listed here is on the path to quantities that differ, the pointer
+says so.
 
 All but `id`, `title` and `area` may stay empty until the goal is
 confirmed; `psx port next` asks for them.

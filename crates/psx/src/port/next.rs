@@ -3,7 +3,7 @@
 //! the items, each due on a fact and done on a fact the work leaves behind.
 //! `port status` shows the facts, `port next` gives the one item due.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -171,6 +171,9 @@ pub struct Feature {
     pub catalogued: bool,
     /// Its entry names its code.
     pub located: bool,
+    /// The functions its recordings run that no feature's code lists and
+    /// not_ported.toml does not, by entry.
+    pub unclaimed: Vec<u32>,
     /// What keeps it from being recorded: no work recordings, its
     /// scenarios' problems or determinism checks, coverage psx cannot
     /// count.
@@ -222,7 +225,7 @@ impl Feature {
     /// Its own work is finished: matching, every branch resolved, no
     /// question open.
     pub fn finished(&self) -> bool {
-        self.matching() && self.branches_resolved() && self.questions.is_empty()
+        self.matching() && self.branches_resolved() && self.questions.is_empty() && self.unclaimed.is_empty()
     }
 
     pub fn matching(&self) -> bool {
@@ -243,7 +246,11 @@ impl Feature {
             self.located,
             self.unrecorded.is_empty() && self.late.is_empty(),
             self.matching(),
-            self.branches_resolved() && self.questions.is_empty() && self.code_reviewed && self.assets.settled(),
+            self.branches_resolved()
+                && self.questions.is_empty()
+                && self.unclaimed.is_empty()
+                && self.code_reviewed
+                && self.assets.settled(),
             all_pass(&self.held_out) && self.off.is_empty(),
         ];
         Some(Stage::ALL[checks.iter().take_while(|c| **c).count()])
@@ -513,6 +520,9 @@ pub struct Facts {
     pub decomp: Value,
     /// Functions whose C passed and now fails ([`crate::decomp::regressed`]).
     pub regressed: Vec<(String, Option<String>, String)>,
+    /// The original's function names (names/), by entry with the
+    /// segment's bits cleared.
+    pub names: BTreeMap<u32, String>,
 }
 
 impl Facts {
@@ -527,7 +537,6 @@ impl Facts {
             .filter(|o| o["bounded_by"] == "found_code")
             .filter_map(|o| o["name"].as_str().map(String::from))
             .collect();
-        let confirmed = port.goal.confirmed.as_ref().map(|c| c.wont_reach.clone()).unwrap_or_default();
         let head = git.head.as_deref();
         // A check judges HEAD as committed: uncommitted changes to what it
         // reads (a recording made again, the port's code) leave it stale.
@@ -561,6 +570,7 @@ impl Facts {
                     return Feature {
                         catalogued: false,
                         located: false,
+                        unclaimed: Vec::new(),
                         unrecorded: Vec::new(),
                         late: Vec::new(),
                         verdict: State::Missing,
@@ -583,27 +593,36 @@ impl Facts {
                     crate::scenario::feature_unready(root, e)
                 };
                 let paths: Vec<PathBuf> = e.recordings.all().filter_map(path).collect();
-                let mine = confirmed.get(&id);
-                // The person confirmed the key as it stands.
-                let agreed = |k: &String| mine.and_then(|m| m.get(k)) == e.wont_reach.get(k);
                 let code: Vec<u32> = e.code.iter().filter_map(|c| super::entry_addr(c)).collect();
+                // A function several features list is covered once: any
+                // of their entries' wont_reach answers for its branches by
+                // address or range.
+                let mut shared = e.wont_reach.clone();
+                for o in port.entries.values().filter(|o| o.id != id) {
+                    let place = |k: &&String| super::entry_addr(k).or(super::entry_range(k).map(|r| r.0)).is_some();
+                    for (k, why) in o.wont_reach.iter().filter(|(k, _)| place(k)) {
+                        shared.entry(k.clone()).or_insert_with(|| why.clone());
+                    }
+                }
+                // The person confirmed the key as it stands.
+                let agreed = |k: &String| shared.get(k).is_some_and(|why| port.wont_reach_agreed(k, why));
                 let script: Vec<Stretch> = e.code.iter().filter_map(|c| Stretch::parse(c)).collect();
                 // The ways `paths` took the branches of its code, and what
                 // stops psx counting them.
-                let branches_of = |paths: &[PathBuf]| -> (Vec<Branch>, Vec<String>) {
-                    let (mut branches, mut problems) = (Vec::new(), Vec::new());
+                let branches_of = |paths: &[PathBuf]| -> (Vec<Branch>, Vec<String>, BTreeSet<u32>) {
+                    let (mut branches, mut problems, mut ran) = (Vec::new(), Vec::new(), BTreeSet::new());
                     if e.recordings.work.is_empty() {
-                        return (branches, problems);
+                        return (branches, problems, ran);
                     }
                     if let (Some(inv), false) = (&inv, code.is_empty()) {
                         let fb = crate::coverage::feature_branches(&ctx, inv, paths, &code);
                         problems.extend(fb.problems);
+                        ran = fb.ran;
                         let mut found: Vec<Branch> = fb
                             .branches
                             .into_iter()
                             .map(|c| {
-                                let key =
-                                    code_key(&e.wont_reach, c.pc, c.ways, c.test.as_ref().map(|t| t.key.as_str()));
+                                let key = code_key(&shared, c.pc, c.ways, c.test.as_ref().map(|t| t.key.as_str()));
                                 Branch {
                                     test: c.test,
                                     behind: c.behind,
@@ -632,8 +651,7 @@ impl Facts {
                         let (items, p) = crate::script_cover::items(&crate::script_cover::merged(paths), &script);
                         problems.extend(p);
                         branches.extend(items.into_iter().map(|i| {
-                            let key =
-                                e.wont_reach.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
+                            let key = shared.keys().find(|k| Stretch::parse(k).is_some_and(|w| w.contains(&i.at)));
                             Branch {
                                 at: Place::Script { at: i.at, routine: i.routine },
                                 never: i.never,
@@ -644,10 +662,14 @@ impl Facts {
                             }
                         }));
                     }
-                    (branches, problems)
+                    (branches, problems, ran)
                 };
-                let (mut branches, uncounted) = branches_of(&paths);
+                let (mut branches, uncounted, ran) = branches_of(&paths);
                 unrecorded.extend(uncounted);
+                // What its own recordings run that no feature claims and
+                // not_ported.toml does not list.
+                let unclaimed: Vec<u32> =
+                    ran.into_iter().filter(|&f| port.claiming(f).is_empty() && port.not_ported(f).is_none()).collect();
                 // Code the other features' recordings run counts their
                 // ways too, once the port matches them (their problems
                 // are theirs).
@@ -681,6 +703,7 @@ impl Facts {
                 Feature {
                     catalogued: true,
                     located: !e.code.is_empty(),
+                    unclaimed,
                     unrecorded,
                     late: crate::scenario::feature_late_input(root, e),
                     verdict,
@@ -722,6 +745,11 @@ impl Facts {
             debug_files: crate::disc_names::unread(root),
             decomp: crate::decomp::counts(root),
             regressed: crate::decomp::regressed(root),
+            names: psx_symbols::names::load(root)
+                .functions
+                .iter()
+                .map(|f| (f.address & 0x1FFF_FFFF, f.name.text.clone()))
+                .collect(),
         })
     }
 
@@ -1105,6 +1133,24 @@ impl Facts {
                 "answer it from the original's code or a recording, cite the answer where the port's code uses it, and remove the question from the entry",
             );
         }
+        // 4b. Code its recordings run that no one has accounted for: a
+        // feature's, or not ported. Those the pointer shows first.
+        if let Some(f) = find(&|f| f.matching() && !f.unclaimed.is_empty()) {
+            let shown = self.unclaimed_shown(f);
+            let more = f.unclaimed.len().saturating_sub(shown.len());
+            return Item::agent(
+                "Locate",
+                Some(&f.id),
+                format!(
+                    "its recordings run {} functions no feature's code lists and catalogue/not_ported.toml does not: {}{}",
+                    f.unclaimed.len(),
+                    shown.join(", "),
+                    if more > 0 { format!(" and {more} more (port status lists them)") } else { String::new() }
+                ),
+                "every function its recordings run is in a feature's code or in catalogue/not_ported.toml",
+                "read each (code disasm, decompile, its callers and what it writes): one holding a rule the game follows goes under code of the feature it is, this one or another (a function may be several features'); code the port has its own of or none (library code, the CD and sound drivers, the GPU's command building, debug code) goes in catalogue/not_ported.toml, by entry or address range, with why. A feature's code is your reading of the original: revise it as you learn, and take out what turns out to be another's with its wont_reach entries",
+            );
+        }
         // 5. An uncovered branch: a recording that reaches it.
         // Not one waiting on a play request: its answer may cover it.
         let uncovered = |f: &Feature| {
@@ -1327,6 +1373,32 @@ impl Facts {
     }
 
     /// The features matching their recordings now: what a review lists.
+    /// A feature's unclaimed functions as Locate shows them: the ones its
+    /// verdict's pointer names first, then by address, at most 20.
+    fn unclaimed_shown(&self, f: &Feature) -> Vec<String> {
+        let mut pointed: Vec<u32> = Vec::new();
+        if let State::Current(super::verdict::Verdict { pointer: Some(p), .. }) = &f.verdict {
+            let qs = p["quantities"].as_array().into_iter().flatten();
+            let lists = qs.flat_map(|q| [&q["writers"], &q["written_before"]]).chain([&p["first_run"]]);
+            for x in lists.flat_map(|l| l.as_array().into_iter().flatten()) {
+                if let Some(a) = crate::commands::addr_value(&x["entry"]) {
+                    pointed.push(a & 0x1FFF_FFFF);
+                }
+            }
+        }
+        let mut order: Vec<u32> = f.unclaimed.clone();
+        order.sort_by_key(|a| (!pointed.contains(&(a & 0x1FFF_FFFF)), *a));
+        order.into_iter().take(20).map(|a| self.function_name(a)).collect()
+    }
+
+    /// A function as port next names it: its name and entry, or the entry.
+    fn function_name(&self, a: u32) -> String {
+        match self.names.get(&(a & 0x1FFF_FFFF)) {
+            Some(n) => format!("{n} ({})", hex(a)),
+            None => hex(a),
+        }
+    }
+
     fn matching_ids(&self) -> Vec<String> {
         self.features.iter().filter(|f| f.matching()).map(|f| f.id.clone()).collect()
     }
@@ -1432,6 +1504,9 @@ impl Facts {
             }
             if !f.off.is_empty() {
                 row["off"] = json!(f.off);
+            }
+            if !f.unclaimed.is_empty() {
+                row["unclaimed"] = json!(f.unclaimed.iter().map(|&a| self.function_name(a)).collect::<Vec<_>>());
             }
             if !f.assets.is_empty() {
                 row["assets"] = f.assets.json();
@@ -2097,6 +2172,15 @@ mod tests {
         set(&mut f, "F-0002", |x| x.questions = vec!["does it snap while rising?".into()]);
         assert_eq!(next(&f), ("Answer", "agent", "F-0002".into()));
         set(&mut f, "F-0002", |x| x.questions.clear());
+        // Code its recordings run that nobody accounted for.
+        f.names.insert(0x0003_40A4, "collide".into());
+        set(&mut f, "F-0002", |x| x.unclaimed = vec![0x8001_0088, 0x8003_40A4]);
+        assert_eq!(f.stage("F-0002"), Some(Stage::Matching));
+        let item = f.next();
+        assert_eq!((item.item, item.feature.as_deref()), ("Locate", Some("F-0002")));
+        assert!(item.why.ends_with("not_ported.toml does not: 0x80010088, collide (0x800340A4)"), "{}", item.why);
+        assert_eq!(f.status()["areas"]["driving"][1]["unclaimed"][1], "collide (0x800340A4)", "{}", f.status());
+        set(&mut f, "F-0002", |x| x.unclaimed.clear());
         let branch = |wont_reach| Branch::code(0x8002_D820, 0x8002_D810, 1, wont_reach);
         set(&mut f, "F-0001", |x| x.branches = vec![branch(None); 7]);
         let short = f.features[0].branches_json(false);

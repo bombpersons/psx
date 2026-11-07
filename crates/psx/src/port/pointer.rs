@@ -182,6 +182,8 @@ pub(crate) struct Code {
     features: BTreeMap<u32, Vec<String>>,
     /// Functions with C: whether its last check passed on this C and names.
     checked: BTreeMap<String, bool>,
+    /// catalogue/not_ported.toml.
+    not_ported: BTreeMap<String, String>,
 }
 
 impl Code {
@@ -215,7 +217,7 @@ impl Code {
             })
             .collect();
         let names = names.functions.iter().map(|f| (crate::run::fold(f.address), f.name.text.clone())).collect();
-        Code { functions, names, features, checked }
+        Code { functions, names, features, checked, not_ported: port.not_ported.clone() }
     }
 
     /// The function holding `pc` (folded): its entry. Where overlays share
@@ -389,7 +391,7 @@ pub(crate) fn pointer(
         functions.extend(crate::commands::addr_value(&f["entry"]).map(crate::run::fold));
     }
     let name = |f: u32| code.describe(f)["function"].as_str().unwrap_or_default().to_string();
-    let (mut own_unchecked, mut own_checked, mut nobody) = (vec![], vec![], vec![]);
+    let (mut own_unchecked, mut own_checked, mut nobody, mut set_aside) = (vec![], vec![], vec![], vec![]);
     let mut others: BTreeMap<(bool, Vec<String>), Vec<String>> = BTreeMap::new();
     for &f in &functions {
         let d = code.describe(f);
@@ -397,6 +399,8 @@ pub(crate) fn pointer(
             d["features"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect();
         if fs.contains(&e.id) {
             if d["c"] == "checked" { own_checked.push(name(f)) } else { own_unchecked.push(name(f)) }
+        } else if let Some(why) = fs.is_empty().then(|| super::not_ported_in(&code.not_ported, f)).flatten() {
+            set_aside.push(format!("{} ({why})", name(f)));
         } else if fs.is_empty() {
             nobody.push(name(f));
         } else {
@@ -420,6 +424,12 @@ pub(crate) fn pointer(
     }
     if !nobody.is_empty() {
         evidence.push(format!("{}: in no feature's code", nobody.join(", ")));
+    }
+    if !set_aside.is_empty() {
+        evidence.push(format!(
+            "{}: listed in catalogue/not_ported.toml, and on the path to the quantities that differ: the rule may be there",
+            set_aside.join("; ")
+        ));
     }
     if let Some(c) = with_c {
         let mut kept = json!({"status": c["status"], "share_in_c": c["share_in_c"]});
@@ -501,6 +511,7 @@ mod tests {
             names: [(0x1000, "grip".to_string()), (0x2000, "collide".to_string())].into(),
             features: [(0x1000, vec!["F-0007".to_string()]), (0x2000, vec!["F-0010".to_string()])].into(),
             checked: BTreeMap::new(),
+            not_ported: BTreeMap::new(),
         };
         let mut seen = Seen { reached: true, last: vec![0; (RAM + 0x400) as usize], ..Seen::default() };
         seen.reads.insert("speed".into(), vec![0x5000, 0x5001]);
@@ -523,5 +534,22 @@ mod tests {
         let p = pointer(&code, &e, "b1/offroad", &["speed".into()], &seen, Some(&c), &|_| false);
         assert!(p["evidence"].to_string().contains("checked C covers grip and the recording replays with it"));
         assert!(!p.to_string().contains("\"at\""), "{p}");
+        // Code set aside as not ported that writes a differing quantity.
+        code.features.remove(&0x1000);
+        code.not_ported.insert("0x00000F00..0x00001100".into(), "libgte helpers".into());
+        let p = pointer(
+            &code,
+            &Entry { id: "F-0010".into(), ..Entry::default() },
+            "b1/offroad",
+            &["speed".into()],
+            &seen,
+            None,
+            &|_| false,
+        );
+        assert!(
+            p["evidence"].to_string().contains("grip (libgte helpers): listed in catalogue/not_ported.toml"),
+            "{}",
+            p["evidence"]
+        );
     }
 }

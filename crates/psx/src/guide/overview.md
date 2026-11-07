@@ -73,18 +73,18 @@ cut):
   id, title, area
   code        the original's functions, by entry address (the inventory's),
               and stretches of script programs (croc+0x1803..0x18A0;
-              topic code, Scripted rules)
+              topic code, Scripted rules), revised as you learn
   questions   what is not known yet
   assets      asset names its recordings need to replay (topic assets)
   [recordings] work and held_out, as scenario/name
   [wont_reach] branch address (or script position) = why no recording
-              can reach it; an address range (0xSTART..0xEND, end
-              excluded) answers for the branches in it no recording ran,
-              and a recording that runs one is a problem
+              can reach it; a range (0xSTART..0xEND, end excluded)
+              answers for its branches no recording ran
 
-Features have no dependencies: a failure's pointer says whose code it
-is in. The person reviews the goal with psx port confirm and confirms with psx port confirm --yes,
-which also confirms the wont_reach branches with their reasons. The list may
+Each function the goal's recordings run is some feature's code or in
+catalogue/not_ported.toml (entry or range = why: libraries, drivers). Features have no dependencies: a
+failure's pointer says whose code it is in. The person reviews the goal with psx port confirm and confirms it with
+--yes, the wont_reach branches and their reasons included. The list may
 grow afterwards; taking a feature out or an asset name out of the goal, or
 a wont_reach added or changed, needs confirming again.
 
@@ -190,8 +190,8 @@ A feature's stages, each holding with those before it:
 - matching: every work recording passes at HEAD.
 - reviewed: every branch of its code taken both ways by its recordings
   (or the other goal features' that pass at HEAD) or a confirmed
-  wont_reach, no question open, its assets checked or unused,
-  and the code's review holds.
+  wont_reach, no question open, the code its recordings run claimed or
+  not ported, its assets checked or unused, and the code's review holds.
 - done: its held-out recordings pass.
 
 port_next's items, in this order:
@@ -209,10 +209,11 @@ port_next's items, in this order:
 - Implement: no port_check has judged it at HEAD.
 - Fix: a recording fails, with its quantities and the pointer.
 - Answer: an open question.
+- Locate: functions its recordings run in no feature's code or
+  not_ported.toml.
 - Cover: a branch of its code its recordings (and the other features'
-  that pass at HEAD) never took one way, or a
-  stretch of its script never read (never run, with a map) or a
-  decision's way never taken: record what reaches it, ask the person to
+  that pass at HEAD) never took one way, a stretch of its script never
+  read or a decision's way never taken: record what reaches it, ask the person to
   play it, or list it under wont_reach.
 - Confirm (person): wont_reach branches not confirmed as they stand.
 - Format, Index, Import, Check (the goal's assets): see Assets.
@@ -222,9 +223,8 @@ port_next's items, in this order:
   changed review_lines lines of it (goal.toml, 800 by default); also
   findings without an answer. It asks whether one would write
   a new game like this, not whether it matches the original. how is the
-  brief for someone who did not write it (a sub-agent or a fresh session):
-  the whole code first, then follow-ups of the changes since (git diff);
-  the reviewer also files a report for the person alone (report).
+  brief for a reviewer who did not write it (a sub-agent or a fresh
+  session), who also files a report for the person alone (report).
   review.md: TOML front matter (commit, features finished) between +++
   lines, then one ## heading per finding, each answered with an
   **Answer:** line: done, with port_check passing again, or kept and why.

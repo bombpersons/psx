@@ -605,6 +605,8 @@ pub(crate) struct FeatureBranches {
     /// What keeps the count from being whole: recordings whose coverage
     /// is missing or no longer credited.
     pub problems: Vec<String>,
+    /// The entries of every function the recordings ran, in any code.
+    pub ran: BTreeSet<u32>,
 }
 
 /// The conditional branches of the functions `code` (by entry) and the
@@ -640,6 +642,9 @@ pub(crate) fn feature_branches(ctx: &Ctx, inv: &Value, recordings: &[PathBuf], c
             Ok(_) => {}
             Err(e) => out.problems.push(e.message),
         }
+    }
+    for img in &c.images {
+        out.ran.extend(img.functions.iter().zip(&img.runs).filter(|(_, r)| !r.is_empty()).map(|(f, _)| f.entry));
     }
     let mut seen = BTreeSet::new();
     for img in &c.images {
