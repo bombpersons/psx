@@ -12,9 +12,8 @@ number:
    show it; its code is the agent's current reading, revised freely, and
    every function the goal's recordings run is some feature's or marked
    not ported, so code nobody claimed is work psx can point at.
-3. Dependencies come from what the recordings run, not from the
-   catalogue; features that depend on each other are worked together, as
-   a group.
+3. Features have no dependencies: the pointer says which feature's code
+   a failure is in, and the work goes there.
 4. Features merge and split without losing what the person confirmed,
    and progress is measured in ways that do not change with the cut.
 5. Probes (docs/probes-plan.md) stop at the original's side.
@@ -56,8 +55,13 @@ that recording: the thing to port.
 **Declared dependencies miss the real ones.** b1_course/offroad is
 F-0010's (courses), and the port parted from it in F-0007's code (tyres
 and surfaces), while the catalogue says F-0007 depends on F-0010. Each
-needs the other. `depends` is the agent's guess when it catalogues; the
-recordings' coverage shows what each feature's recordings run.
+needs the other. `depends` is the agent's guess when it catalogues.
+
+**What runs is no dependency either.** Taken from the recordings'
+coverage instead, GT2's dependencies are everything: each of F-0001 to
+F-0011's recordings runs the code of nearly every other (the whole car's
+physics runs every tick, whatever the recording does). In a game whose
+systems run every frame, running together says nothing about needing.
 
 **port next names one feature where work spans several.** Interdependent
 features have come up often: "work on F-0010" when the fix is in F-0007,
@@ -130,9 +134,9 @@ first difference:
 
 The pointer says what it found as evidence, not a verdict:
 
-- the code is another feature's, one not done: the features depend on
-  each other (they join a group, below);
-- the code is this feature's (or its group's) and has no checked C: the
+- the code is another feature's, one not done: the work is there (port
+  next's Fix names that feature beside the failing one);
+- the code is this feature's and has no checked C: the
   rule is not understood yet;
 - checked C covers it and the recording replays with it, and the port
   still differs: the original's rule is known there. The port may not
@@ -185,26 +189,17 @@ code moved to another feature takes its confirmed entries along. Code
 added needs its branches covered (that shows it understood). wont_reach
 stays the person's to confirm: its reasons are in game terms.
 
-### Dependencies: from the recordings
+### No dependencies: the pointer directs
 
-A feature depends on the features whose code its recordings run (each
-recording's coverage against the catalogue's `code`). `depends` goes:
-before there are recordings, order hardly matters (Locate and Record
-wait on no other feature), and once there are, what the recordings run
-is the better account. A goal's closure is its features and those their
-recordings depend on; the person sees a feature added to it as now.
-Existing workspaces: port update moves each feature only `depends`
-brought into the closure into goal.toml's features, so the confirmed
-list keeps it.
-
-### Work by group
-
-Features joined in a cycle of dependencies form a group; a cycle is no
-longer a catalogue problem. port next gives a group's items as one: the
-features, their recordings together, and port_check over all of them.
-Groups come in dependency order. Each feature is still judged and
-finished on its own recordings; the group is the unit of work, not of
-judgement.
+`depends` goes, and nothing takes its place. Order mattered for which
+feature to work on first; before recordings, Locate and Record wait on
+no other feature, and after, a failing recording's pointer says whose
+code its differing quantities come from. port next's Fix names those
+features beside the failing one, so "work on F-0010" says the fix is in
+F-0007's code. A goal's closure is its features; the agent proposes the
+whole list the goal needs and the person confirms it. Existing
+workspaces: port update moves each feature only `depends` brought into
+the closure into goal.toml's features, so the confirmed list keeps it.
 
 ### Merging and splitting
 
@@ -219,10 +214,8 @@ Two features whose recordings each run the other's code are one of:
   checks lose nothing; only finishing the parts apart goes, which those
   never could.
 
-The agent decides which, and port next asks when a group forms ("these
-features' recordings run each other's code: merge them, or say why they
-stay apart"). The README says refining the catalogue is expected at any
-stage.
+The agent decides which, from the pointer and the recordings it can
+make. The README says refining the catalogue is expected at any stage.
 
 A merged feature lists the ids it `replaces`; each part of a split names
 the id it came `from`. Confirmation follows them, so neither counts as the
@@ -276,11 +269,8 @@ until, watch, debug_show value and debug_go's write and read take
   known there; it does not show which side of the port is wrong.
 - **The agent starts the debugger.** The pointer is a place in code and
   features, not a moment; finding the moment is reading the code.
-- **Dependencies are seen, not declared.** Before the recordings order
-  hardly matters; after, the recordings say.
-- **Groups are computed; merges are the agent's.** A group says what is
-  worked together; whether it is one feature is a judgement in game
-  terms.
+- **No dependencies.** Neither the catalogue's guess nor what runs
+  together says what a feature needs; the pointer does, per failure.
 - **The engineering is the agent's.** `code`, not_ported, merges and
   splits are its reading of the original, not confirmed: the person
   could not tell if they were wrong. The pointer and the held-out plays
@@ -369,18 +359,18 @@ called first, is 0x800340A4, the trial's collision response
 (0x80034134), in no feature's code. The whole check took 95 s. Script
 code (Croc's) shows as the interpreter's functions.
 
-### 4. Dependencies from the recordings
+### 4. Dependencies out
 
-Per feature, the features whose code its recordings run, as its
-dependencies; `depends` no longer read (the README, the guide and port
-add drop it; an entry that has it is told so); the closure from the
-goal's features and theirs; dependency order from them, a cycle ordered
-together rather than a problem; port status shows each feature's; port
-update moves features only `depends` brought in into goal.toml.
+`depends` no longer read (the README, the guide and port add drop it;
+an entry that still has it loads); no dependency cycle problem; the
+closure is the goal's features, in id order; port confirm and port
+status without depends and required_by; port update moves features only
+`depends` brought in into goal.toml; port next's Fix names the features
+whose code the pointer finds beside the failing one.
 
-*Done when* GT2's F-0010 and F-0007 each show the other, the catalogue
-has no cycle problem, and after port update its closure and confirmation
-are as before.
+*Done when* GT2's catalogue, after port update, keeps its closure and
+confirmation, has no dependency problems, and its offroad Fix at 0180540
+names F-0007.
 
 ### 5. Code claimed or not ported
 
@@ -398,29 +388,19 @@ range in not_ported answers for library code, and moving a function
 with a confirmed wont_reach entry to another feature, or taking it out,
 asks nothing of the person.
 
-### 6. Groups
-
-Cycles of dependencies as groups; port next's items by group, in
-dependency order; port_check over a group's recordings; the review and
-progress name groups where they name features today.
-
-*Done when* GT2's handling features come as one group, a feature outside
-any cycle comes alone as now, and every port next test passes with
-groups of one.
-
-### 7. Merging, splitting and progress
+### 6. Merging, splitting and progress
 
 `replaces` and `from` in catalogue entries; confirmation through them;
 verdicts (.psx/verdicts/<id>/), reviews' feature lists, progress.jsonl
-and port next's history read through them; port next's item when a
-group forms. The three shares in psx web's Stats and port status plain.
+and port next's history read through them. The three shares in psx
+web's Stats and port status plain.
 
 *Done when* merging two confirmed features into one keeps the goal
 confirmed, keeps their held_out recordings, and port next judges the new
 feature; a split likewise; and the shares are the same before and after
 a merge.
 
-### 8. Screens
+### 7. Screens
 
 An argument on an existing command (the tool budget is full) giving the
 original's and the port's frames at chosen ticks of a recording, or a
@@ -434,9 +414,9 @@ drawing shows becomes quantities (camera, animation, HUD).
 games' screens at the same ticks, a port that does not draw says so, and
 the Review brief asks the reviewer to look.
 
-### 9. A trial on Gran Turismo 2
+### 8. A trial on Gran Turismo 2
 
-A fresh session from port_next, with the handling features as a group:
+A fresh session from port_next, on the handling features:
 whether it merges them, revises their code and not_ported, how it uses
 the pointer, and its feedback file.
 
