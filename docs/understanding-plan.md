@@ -701,6 +701,38 @@ before in goal terms (its recordings passing, Review or Play due), no
 code or test names a feature, the guide fits under 16 KiB and the tool
 budget holds.
 
+**Done** (2026-11-07). goal.toml has no `features` (one left is a
+problem, as is a leftover F-*.md); every recording under scenarios/ is
+work unless held_out lists it; scenarios carry `assets`; catalogue/ is
+not_ported.toml, wont_reach.toml and questions.md. The code to port is
+what the work recordings ran less not_ported, cited by address from
+game/ and tools/. port next runs over the goal: Fix takes the recording
+being fixed, else the earliest to differ (item.recording, with the
+pointer); Restore, Answer, then Locate for code cited nowhere; the late
+Review on the goal matching or finished. The states are matching,
+finished, reviewed and complete; port_check gives one verdict
+(`--scenario` narrows the pointer). port status and psx web show the
+state, recordings by state, the code and the three shares; psx web's
+feature views are gone, and Stats draws the goal over time. The guide's
+overview is 14,051 bytes; catalogue/README.md, formats/README.md,
+AGENTS.md and the game template's comments are rewritten. port update
+moves a workspace (port/migrate.rs): only the goal's entries move; the
+person's plays (goal and confirmed held_out, play requests,
+.psx/goal_recordings.json) go to held_out, the agent's other held-out
+recordings to work; wont_reach and questions to their files, assets to
+the scenarios; the entries, the ledger and an entry outside the goal
+deleted; the confirmation rewritten, and goal.toml's opening comment
+and catalogue/README.md replaced where they tell of features. The C
+example lost its entry. The Croc example, moved and checked at e41f454,
+has its 14 work recordings passing and its 3 plays held out, and Review
+is due (review.md's commit is from the workspace it was copied from, as
+before the move). Not as planned: no citations were added. Its work
+recordings run 255 functions, 12 cited and no not_ported.toml, so once
+a review holds Locate comes before Play, and after it Cover for the
+branches of the code that stays (834 open groups now). Under features
+only the entries' `code` counted. That Locate pass is real reading,
+left as the loop's work rather than done by hand here.
+
 ### 9. Held-out plays, review and acceptance
 
 The goal's plays judged after each review that holds, shown pass or
