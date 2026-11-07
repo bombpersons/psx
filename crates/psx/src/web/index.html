@@ -522,7 +522,7 @@ function attentionList(o) {
 }
 function featuresOf(st) { return Object.entries(st.areas || {}).flatMap(([area, fs]) => fs.map(f => ({...f, area}))); }
 function progressCard(o, st) {
-  const fs = featuresOf(st).filter(f => f.in_goal);
+  const fs = featuresOf(st);
   const sum = k => fs.reduce((s, f) => s + (f[k]?.pass ?? f[k]?.resolved ?? 0), 0);
   const tot = k => fs.reduce((s, f) => s + (f[k]?.total ?? 0), 0);
   const stages = Object.entries(st.stages || {}).map(([k, v]) => `${v} ${k}`).join(" · ");
@@ -544,7 +544,7 @@ function featuresCard(st) {
   const row = f => {
     const w = f.work || {}, b = f.branches || {};
     const pct = (a, t) => t ? Math.round(100 * a / t) : 0;
-    return `<tr><td class="mono">${esc(f.id)}</td><td>${esc(f.title)}${f.in_goal ? "" : ' <span class="quiet">(not in goal)</span>'}</td><td>${esc(f.stage)}</td><td>${esc(f.verdict)}</td>
+    return `<tr><td class="mono">${esc(f.id)}</td><td>${esc(f.title)}</td><td>${esc(f.stage)}</td><td>${esc(f.verdict)}</td>
       <td class="num">${w.pass ?? "–"}/${w.total ?? 0}</td><td><div class="bar"><i style="width:${pct(b.resolved, b.total)}%"></i></div></td><td class="num">${b.resolved ?? 0}/${b.total ?? 0}</td>
       <td class="num">${(f.questions || []).length || ""}</td></tr>`;
   };

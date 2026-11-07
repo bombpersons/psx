@@ -168,7 +168,6 @@ fn hex(a: u32) -> String {
 #[derive(Debug, Clone)]
 pub struct Feature {
     pub id: String,
-    pub in_goal: bool,
     pub catalogued: bool,
     /// Its entry names its code.
     pub located: bool,
@@ -491,7 +490,7 @@ fn one_line(s: &str) -> String {
 pub struct Facts {
     pub port: Port,
     pub git: Git,
-    /// The closure in dependency order.
+    /// The goal's features, by id.
     pub features: Vec<Feature>,
     /// Overlays the inventory knows only from the code that ran in them.
     pub unpack: Vec<String>,
@@ -520,7 +519,6 @@ impl Facts {
     pub fn gather(root: &Path) -> crate::Result<Facts> {
         let mut port = Port::load(root)?;
         let git = Git::read(root);
-        let goal = port.goal_ids();
         let ctx = Ctx { root: root.to_path_buf(), cancel: None };
         let inv = crate::coverage::inventory(&ctx, None).ok().map(|(_, v)| v);
         let unpack = inv
@@ -561,7 +559,6 @@ impl Facts {
             .map(|id| {
                 let Some(e) = port.entries.get(&id) else {
                     return Feature {
-                        in_goal: goal.contains(&id),
                         catalogued: false,
                         located: false,
                         unrecorded: Vec::new(),
@@ -682,7 +679,6 @@ impl Facts {
                     Vec::new()
                 };
                 Feature {
-                    in_goal: goal.contains(&id),
                     catalogued: true,
                     located: !e.code.is_empty(),
                     unrecorded,
@@ -1077,6 +1073,11 @@ impl Facts {
             if let State::Current(v) = &f.verdict {
                 item.pointer = v.pointer.clone().filter(|p| p["recording"] == r.as_str());
             }
+            // The work may be in another feature's code: name it.
+            let others = item.pointer.as_ref().map(|p| super::pointer::features_named(p, &f.id)).unwrap_or_default();
+            if !others.is_empty() {
+                item.why += &format!("; the pointer finds code of {} there", others.join(", "));
+            }
             return item;
         }
         // 3b. A system turned off that the port now has: the original's
@@ -1415,8 +1416,8 @@ impl Facts {
             let stage = f.stage().map(Stage::name).unwrap_or("not catalogued");
             *counts.entry(stage).or_default() += 1;
             let mut row = json!({
-                "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage, "in_goal": f.in_goal,
-                "depends": e.map(|e| &e.depends), "code": e.map(|e| &e.code), "verdict": f.verdict.name(),
+                "id": f.id, "title": e.map(|e| e.title.as_str()), "stage": stage,
+                "code": e.map(|e| &e.code), "verdict": f.verdict.name(),
                 "work": f.work_json(), "held_out": f.held_out_json(), "branches": f.branches_json(false),
                 "questions": f.questions,
             });
@@ -1555,8 +1556,7 @@ impl Facts {
             let title: String = self.title(&f.id).chars().take(32).collect();
             let title = if title.is_empty() { format!("{} (not catalogued)", f.id) } else { title };
             let stage = f.stage().map(Stage::name).unwrap_or("-");
-            let mark = if f.in_goal { "" } else { "  (needed by the goal)" };
-            s.push_str(&format!("  {title:<width$}  {stage:<10} {}{mark}\n", f.summary()));
+            s.push_str(&format!("  {title:<width$}  {stage:<10} {}\n", f.summary()));
             let indent = " ".repeat(width + 4);
             if let Some(b) = f.groups().first().map(|g| g[0]) {
                 s.push_str(&format!("{indent}uncovered: {}\n", b.describe()));
@@ -1696,9 +1696,6 @@ fn standing(status: &Value) -> Value {
         .flat_map(|a| a.values())
         .flat_map(|v| v.as_array().into_iter().flatten())
     {
-        if f["in_goal"] != json!(true) {
-            continue;
-        }
         features += 1;
         *verdicts.entry(f["verdict"].as_str().unwrap_or("none").to_string()).or_default() += 1;
         resolved += f["branches"]["resolved"].as_u64().unwrap_or(0);

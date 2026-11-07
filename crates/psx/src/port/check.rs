@@ -232,8 +232,7 @@ const LAST: &str = ".psx/port/last.json";
 
 #[derive(clap::Args, Clone, Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PortCheckArgs {
-    /// The feature (F-NNNN); default every catalogued feature of the goal's
-    /// closure.
+    /// The feature (F-NNNN); default every catalogued feature of the goal.
     #[serde(default)]
     pub feature: Option<String>,
     /// Also replay the features' work recordings on the original with the

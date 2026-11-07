@@ -242,6 +242,22 @@ impl Code {
     }
 }
 
+/// The features other than `own` whose code the pointer `p` names, in
+/// the order it names them.
+pub fn features_named(p: &Value, own: &str) -> Vec<String> {
+    let qs = p["quantities"].as_array().into_iter().flatten();
+    let lists = qs.flat_map(|q| [&q["writers"], &q["written_before"]]).chain([&p["first_run"]]);
+    let mut out: Vec<String> = Vec::new();
+    for f in lists.flat_map(|l| l.as_array().into_iter().flatten()) {
+        for id in f["features"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            if id != own && !out.iter().any(|o| o == id) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Byte addresses as spans: `0x800A9D58..0x800A9D5C`, the end excluded.
 fn spans(bytes: &[u32]) -> Vec<String> {
     let mut out: Vec<(u32, u32)> = Vec::new();
@@ -399,7 +415,7 @@ pub(crate) fn pointer(
         evidence.push(if *all_done {
             format!("{}: code of {fs}, which pass: shared code, which may be given something else here", fns.join(", "))
         } else {
-            format!("{}: code of {fs}, not done: the features depend on each other", fns.join(", "))
+            format!("{}: code of {fs}, not done: the rule may be there", fns.join(", "))
         });
     }
     if !nobody.is_empty() {
@@ -499,6 +515,8 @@ mod tests {
         let ev = p["evidence"].to_string();
         assert!(ev.contains("collide: code of F-0010, not done"), "{ev}");
         assert!(ev.contains("grip: this feature's code, with no checked C"), "{ev}");
+        // port next's Fix names the other features it finds.
+        assert_eq!(features_named(&p, "F-0007"), ["F-0010"]);
         // Checked C that replays the recording: the rule is known there.
         code.checked.insert("grip".into(), true);
         let c = json!({"status": "same", "share_in_c": 0.2});

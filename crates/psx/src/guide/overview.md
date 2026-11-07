@@ -71,7 +71,6 @@ paragraph in game terms (catalogue/README.md has the format and how fine to
 cut):
 
   id, title, area
-  depends     features it cannot work without
   code        the original's functions, by entry address (the inventory's),
               and stretches of script programs (croc+0x1803..0x18A0;
               topic code, Scripted rules)
@@ -83,8 +82,8 @@ cut):
               excluded) answers for the branches in it no recording ran,
               and a recording that runs one is a problem
 
-The goal's features and their dependencies are its closure. The person
-reviews it with psx port confirm and confirms with psx port confirm --yes,
+Features have no dependencies: a failure's pointer says whose code it
+is in. The person reviews the goal with psx port confirm and confirms with psx port confirm --yes,
 which also confirms the wont_reach branches with their reasons. The list may
 grow afterwards; taking a feature out or an asset name out of the goal, or
 a wont_reach added or changed, needs confirming again.

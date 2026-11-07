@@ -254,7 +254,7 @@ enum PortAction {
     /// Add a ready-made crate under addons/ (full: a window, a renderer with a PS1 and a
     /// modern look, the disc import and menus, wired into game/src/main.rs).
     Add(template::PortAddArgs),
-    /// Show the goal's features, their closure and any problems; with --yes, record the
+    /// Show the goal's features and any problems; with --yes, record the
     /// person's confirmation of the list in goal.toml.
     Confirm(port::PortConfirmArgs),
     /// The goal's features by stage and area, their verdicts, problems, and the item due now.

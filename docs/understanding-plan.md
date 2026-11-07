@@ -372,6 +372,18 @@ whose code the pointer finds beside the failing one.
 confirmation, has no dependency problems, and its offroad Fix at 0180540
 names F-0007.
 
+**Done** (2026-11-07). `depends` still loads and nothing reads it: no
+dependency or cycle problems, the closure is the goal's features by id,
+port confirm, port status and psx web drop depends, required_by and
+in_goal. port update lists in goal.toml the features `depends` brought
+in, keeping the confirmation (`goal_features_added`). Fix's why adds
+"the pointer finds code of F-x there" for other features' code it names;
+the evidence says the rule may be there, not that they depend on each
+other. On GT2 (whose goal already lists F-0001 to F-0011) port update
+adds nothing and the confirmation covers; offroad's pointer at 0180540
+names F-0002, F-0003, F-0007 and F-0004, sum_wheel_speeds listed by
+three features: step 5's shared code.
+
 ### 5. Code claimed or not ported
 
 `catalogue/not_ported.toml` (function or range = why); the goal's code

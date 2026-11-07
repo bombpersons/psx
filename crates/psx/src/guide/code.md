@@ -144,7 +144,7 @@ the recording (first_run, called_first when the function itself is
 new). Each function comes with the features whose code lists it and its
 C (checked, unchecked, none), and with_c says whether the recording
 replays with the checked C. evidence reads it: another feature's code
-not done (the features depend on each other), this feature's code with
+not done (the rule may be there: Fix names it), this feature's code with
 no checked C (the rule is not understood yet), or checked C that
 replays it (the rule is known there: the port does not follow it, or
 what is around it differs). port next's Fix carries it. It is a place

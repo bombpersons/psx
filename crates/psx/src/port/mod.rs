@@ -2,9 +2,8 @@
 //! builds the port (docs/port-design.md). `port init` writes it.
 //! The goal (`goal.toml`) says which features the person wants, the
 //! catalogue (`catalogue/F-NNNN.md`) describes the game's features in game
-//! terms with their dependencies, and `port confirm` records the person's
-//! approval of the goal's list. The goal's features and everything they
-//! depend on are its closure; each has a stage.
+//! terms, and `port confirm` records the person's approval of the goal's
+//! list. The goal's features are its closure; each has a stage.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -206,7 +205,7 @@ impl Goal {
 
 /// The person's confirmation: when, the list they confirmed, and the
 /// branches they agreed no recording can reach (feature, address, reason).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Confirmed {
     pub at: String,
@@ -230,6 +229,9 @@ pub struct Entry {
     pub title: String,
     #[serde(default)]
     pub area: String,
+    /// No longer read: features have no dependencies (a failure's
+    /// pointer says whose code it is in). Kept so an entry that has it
+    /// loads; port update keeps the closure it made in the goal.
     #[serde(default)]
     pub depends: Vec<String>,
     /// The original's functions that are the feature, by entry address:
@@ -347,7 +349,7 @@ pub enum Confirmation {
     Missing,
     /// Every confirmed feature is still in the goal.
     Covers { at: String },
-    /// Features the person confirmed are no longer in the goal's closure.
+    /// Features the person confirmed are no longer in the goal.
     Shrunk { at: String, missing: Vec<String> },
 }
 
@@ -645,18 +647,6 @@ impl Port {
                 out.push(problem(f, "no description: a paragraph in game terms after the front matter"));
             }
             entry_problems(e, &mut out);
-            for d in &e.depends {
-                if d == &e.id {
-                    out.push(problem(f, "depends on itself"));
-                } else if !self.entries.contains_key(d) {
-                    out.push(problem(f, format!("depends on {d}, which has no catalogue entry")));
-                }
-            }
-        }
-        let cyclic = self.cyclic();
-        if !cyclic.is_empty() {
-            let ids: Vec<&str> = cyclic.iter().map(String::as_str).collect();
-            out.push(problem(CATALOGUE, format!("a dependency cycle runs through or before {}", ids.join(", "))));
         }
         if self.goal.description.trim().is_empty() {
             out.push(problem(GOAL, "no description: the goal in the person's words"));
@@ -678,35 +668,6 @@ impl Port {
         self.problems.extend(out);
     }
 
-    /// Entries that no dependency order can place: in a cycle, or depending
-    /// on one.
-    fn cyclic(&self) -> BTreeSet<String> {
-        let all: BTreeSet<String> = self.entries.keys().cloned().collect();
-        let placed: BTreeSet<String> = self.order(&all).into_iter().collect();
-        all.difference(&placed).cloned().collect()
-    }
-
-    /// `ids` in dependency order (dependencies first, then by id), leaving
-    /// out any that a cycle keeps from being placed.
-    fn order(&self, ids: &BTreeSet<String>) -> Vec<String> {
-        let deps = |id: &String| -> BTreeSet<String> {
-            self.entries
-                .get(id)
-                .map(|e| e.depends.iter().filter(|d| ids.contains(*d) && *d != id).cloned().collect())
-                .unwrap_or_default()
-        };
-        let mut waiting: BTreeMap<String, BTreeSet<String>> = ids.iter().map(|id| (id.clone(), deps(id))).collect();
-        let mut out = Vec::new();
-        while let Some(next) = waiting.iter().find(|(_, d)| d.is_empty()).map(|(id, _)| id.clone()) {
-            waiting.remove(&next);
-            for d in waiting.values_mut() {
-                d.remove(&next);
-            }
-            out.push(next);
-        }
-        out
-    }
-
     /// The goal's features as ids: its list, or every catalogued feature.
     pub fn goal_ids(&self) -> BTreeSet<String> {
         match &self.goal.features {
@@ -715,22 +676,54 @@ impl Port {
         }
     }
 
-    /// The goal's features and every feature they depend on, in dependency
-    /// order; features a cycle keeps from being placed come last, by id.
+    /// The goal's features, by id.
     pub fn closure(&self) -> Vec<String> {
-        let mut ids = BTreeSet::new();
-        let mut todo: Vec<String> = self.goal_ids().into_iter().collect();
+        self.goal_ids().into_iter().collect()
+    }
+
+    /// The features the goal's list and the entries' `depends` brought in
+    /// before `depends` went, which the goal does not list: what port
+    /// update adds to it. None when the goal is every feature.
+    pub(crate) fn brought_by_depends(&self) -> Vec<String> {
+        let Features::List(listed) = &self.goal.features else { return Vec::new() };
+        let mut ids: BTreeSet<String> = BTreeSet::new();
+        let mut todo: Vec<String> = listed.clone();
         while let Some(id) = todo.pop() {
             if ids.insert(id.clone()) {
                 if let Some(e) = self.entries.get(&id) {
-                    todo.extend(e.depends.iter().filter(|d| !ids.contains(*d)).cloned());
+                    todo.extend(
+                        e.depends.iter().filter(|d| !ids.contains(*d) && self.entries.contains_key(*d)).cloned(),
+                    );
                 }
             }
         }
-        let mut out = self.order(&ids);
-        let placed: BTreeSet<String> = out.iter().cloned().collect();
-        out.extend(ids.difference(&placed).cloned());
-        out
+        ids.into_iter().filter(|id| !listed.contains(id)).collect()
+    }
+
+    /// Lists the features `depends` brought into the goal in goal.toml,
+    /// now that it is no longer read, so the goal and its confirmation keep
+    /// them; returns them. Nothing without a goal.toml.
+    pub(crate) fn keep_depends(root: &Path, dry_run: bool) -> crate::Result<Vec<String>> {
+        if !root.join(GOAL).is_file() {
+            return Ok(Vec::new());
+        }
+        let port = Port::load(root)?;
+        let brought = port.brought_by_depends();
+        let Features::List(listed) = &port.goal.features else { return Ok(brought) };
+        if brought.is_empty() || dry_run {
+            return Ok(brought);
+        }
+        let path = root.join(GOAL);
+        let text = std::fs::read_to_string(&path).map_err(|e| crate::Error::io(&path, e))?;
+        let all: Vec<String> = listed.iter().chain(&brought).cloned().collect();
+        let new = with_features(&text, &all);
+        let read: Goal = toml::from_str(&new)
+            .map_err(|e| crate::Error::invalid(format!("{GOAL} rewritten unreadably: {}", e.message())))?;
+        if read.features != Features::List(all) || read.confirmed != port.goal.confirmed {
+            return Err(crate::Error::invalid(format!("{GOAL}: its features could not be rewritten; nothing written")));
+        }
+        std::fs::write(&path, new).map_err(|e| crate::Error::io(&path, e))?;
+        Ok(brought)
     }
 
     pub fn confirmation(&self) -> Confirmation {
@@ -740,7 +733,6 @@ impl Port {
             (Features::All, Features::All) => Vec::new(),
             (Features::All, Features::List(_)) => vec!["all".into()],
             (Features::List(was), _) => {
-                // Still needed by another goal feature counts as still wanted.
                 let now: BTreeSet<String> = self.closure().into_iter().collect();
                 was.iter().filter(|id| !now.contains(*id)).cloned().collect()
             }
@@ -760,32 +752,21 @@ impl Port {
     /// The closure as the person reads it before confirming, with each
     /// feature's stage.
     pub fn closure_json(&self, stage: &dyn Fn(&str) -> Option<Stage>) -> Value {
-        let goal = self.goal_ids();
-        let closure = self.closure();
-        let wanted: BTreeSet<&String> = closure.iter().collect();
-        let rows: Vec<Value> = closure
+        let rows: Vec<Value> = self
+            .closure()
             .iter()
             .map(|id| {
                 let e = self.entries.get(id);
-                let required_by: Vec<&String> = self
-                    .entries
-                    .values()
-                    .filter(|o| wanted.contains(&o.id) && o.depends.contains(id))
-                    .map(|o| &o.id)
-                    .collect();
                 json!({
                     "id": id,
                     "title": e.map(|e| e.title.as_str()),
                     "area": e.map(|e| e.area.as_str()),
                     "stage": stage(id).map(Stage::name),
-                    "in_goal": goal.contains(id),
-                    "depends": e.map(|e| &e.depends),
                     "code": e.map(|e| &e.code),
                     "recordings": e.map(|e| &e.recordings),
                     "assets": e.map(|e| &e.assets),
                     "wont_reach": e.map(|e| &e.wont_reach),
                     "questions": e.map(|e| &e.questions),
-                    "required_by": required_by,
                 })
             })
             .collect();
@@ -831,6 +812,36 @@ impl Port {
     }
 }
 
+/// `goal.toml`'s text with its top-level `features` set to `ids`, on one
+/// line where the key was (or before the first table), the rest kept.
+fn with_features(text: &str, ids: &[String]) -> String {
+    let line = format!("features = {}", toml::Value::from(ids.to_vec()));
+    let mut out: Vec<String> = Vec::new();
+    let (mut at, mut depth, mut in_table) = (None, 0i32, false);
+    for l in text.lines() {
+        let t = l.trim_start();
+        if depth > 0 {
+            depth += t.matches('[').count() as i32 - t.matches(']').count() as i32;
+            continue;
+        }
+        if t.starts_with('[') {
+            in_table = true;
+        }
+        if !in_table && t.split(['=', ' ', '\t']).next() == Some("features") {
+            at = Some(out.len());
+            let value = t.split_once('=').map(|(_, v)| v).unwrap_or("");
+            depth = value.matches('[').count() as i32 - value.matches(']').count() as i32;
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    let at = at.unwrap_or_else(|| out.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(out.len()));
+    out.insert(at, line);
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -871,7 +882,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_closure_adds_dependencies_first() {
+    fn the_closure_is_the_goal_and_depends_is_not_read() {
         let (a, b, c, d) = (
             feature("F-0001", ""),
             feature("F-0002", "F-0001"),
@@ -889,11 +900,27 @@ pub(crate) mod tests {
             ],
         );
         assert_eq!(port.problems, []);
-        assert_eq!(port.closure(), ["F-0001", "F-0002", "F-0003"]);
+        assert_eq!(port.closure(), ["F-0003"]);
         let rows = port.closure_json(&|id| port.entries.contains_key(id).then_some(Stage::Catalogued));
-        assert_eq!(rows[0]["required_by"], json!(["F-0002", "F-0003"]));
-        assert_eq!(rows[2]["in_goal"], json!(true));
-        assert_eq!(rows[1]["in_goal"], json!(false));
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(port.brought_by_depends(), ["F-0001", "F-0002"]);
+    }
+
+    #[test]
+    fn port_update_lists_what_depends_brought_in_and_keeps_the_confirmation() {
+        let (a, b, c) = (feature("F-0001", ""), feature("F-0002", "F-0001"), feature("F-0003", "F-0002"));
+        let goal = "description = \"x\"\nfeatures = [\n  \"F-0003\",\n]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\", \"F-0003\"] }\n# features: the goal's list\n";
+        let (dir, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b), ("F-0003.md", &c)]);
+        assert!(matches!(port.confirmation(), Confirmation::Shrunk { .. }));
+        assert_eq!(Port::keep_depends(&dir.0, true).unwrap(), ["F-0001", "F-0002"]);
+        assert_eq!(std::fs::read_to_string(dir.0.join(GOAL)).unwrap(), goal);
+        assert_eq!(Port::keep_depends(&dir.0, false).unwrap(), ["F-0001", "F-0002"]);
+        let text = std::fs::read_to_string(dir.0.join(GOAL)).unwrap();
+        assert!(text.contains("features = [\"F-0003\", \"F-0001\", \"F-0002\"]\nconfirmed"), "{text}");
+        assert!(text.ends_with("# features: the goal's list\n"), "{text}");
+        let port = Port::load(&dir.0).unwrap();
+        assert_eq!(port.confirmation(), Confirmation::Covers { at: "t".into() });
+        assert_eq!(Port::keep_depends(&dir.0, false).unwrap(), Vec::<String>::new());
     }
 
     #[test]
@@ -916,14 +943,12 @@ pub(crate) mod tests {
                 "catalogue/F-0005.md: no title",
                 "catalogue/F-0005.md: no area",
                 "catalogue/F-0005.md: no description: a paragraph in game terms after the front matter",
-                "catalogue/F-0005.md: depends on F-0006, which has no catalogue entry",
-                "catalogue: a dependency cycle runs through or before F-0001, F-0002",
                 "goal.toml: F-0007 has no catalogue entry",
                 "goal.toml: F-0001 is listed twice",
             ]
         );
-        // A cycle still gives every feature in the closure.
-        assert_eq!(port.closure(), ["F-0007", "F-0001", "F-0002"]);
+        // A cycle in depends is no problem: it is not read.
+        assert_eq!(port.closure(), ["F-0001", "F-0007"]);
     }
 
     #[test]
@@ -1002,11 +1027,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_confirmed_feature_still_needed_by_the_goal_has_not_left_it() {
+    fn a_confirmed_feature_only_depends_named_has_left_the_goal() {
         let (a, b) = (feature("F-0001", ""), feature("F-0002", "F-0001"));
         let goal = "features = [\"F-0002\"]\nconfirmed = { at = \"t\", features = [\"F-0001\", \"F-0002\"] }\n";
         let (_d, port) = workspace(goal, &[("F-0001.md", &a), ("F-0002.md", &b)]);
-        assert_eq!(port.confirmation(), Confirmation::Covers { at: "t".into() });
+        assert_eq!(port.confirmation(), Confirmation::Shrunk { at: "t".into(), missing: vec!["F-0001".into()] });
     }
 
     #[test]
