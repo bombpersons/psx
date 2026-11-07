@@ -11,9 +11,12 @@ number:
 2. Features' dependencies come from what their recordings run as well as
    from what the catalogue says.
 3. Features that depend on each other are worked together, as a group.
-4. The catalogue changes as the agent learns the game: features merge
-   and split without losing what the person confirmed.
+4. The catalogue changes as the agent learns the game: features merge,
+   split and revise their code without losing what the person confirmed.
 5. Probes (docs/probes-plan.md) stop at the original's side.
+6. The agent sees the port's screen beside the original's, to
+   understand what drawing does; what it shows that can be checked
+   becomes quantities.
 
 Written 2026-11-07, after the GT2 debugger trial (docs/gt2-debugger-trial.md).
 
@@ -63,6 +66,22 @@ car into gearbox, drive types, differentials, tyres and body: each a
 capability a player could name, none recordable without the others.
 Taking a feature out of a confirmed goal needs the person to confirm
 again, so a merge reads as losing features.
+
+**A feature's code is held as first written.** Adding a function to
+`code` brings every branch of it to Cover, or wont_reach entries the
+person must confirm; removing one turns its wont_reach entries into
+problems, confirmed again. A helper two features share owes its branches
+twice if both list it. The README says what `code` is, not that it is
+revised, and Locate asks only while it is empty. So `code` stays the
+first guess, though the agent understands the game better later: the
+pointer at 404dbb7 found the collision response in no feature's code.
+
+**Nothing shows the agent its port's screen.** psx web draws the port's
+frames beside the original's for the person; no result gives them to
+the agent, and the guide never says to look. The reviewer's report on
+how the port looks as a game is written from the code alone. The
+quantities say nothing of the camera, animation or HUD, so a port can
+pass every recording and draw the game wrong.
 
 ## The design
 
@@ -149,6 +168,39 @@ goal shrinking. Recordings (work and held_out, the person's plays) and
 wont_reach confirmations move with the recordings and code they belong
 to; the new features are judged again by port_check.
 
+A feature's `code` is the agent's current reading of where its rules
+are, revised as it learns: a function added when the pointer or a watch
+shows the feature's quantities come from it, one taken out when it
+turns out to be another's or shared. port next asks when a feature's
+recordings run code that writes its compared quantities and no feature
+lists (add it to one, or say why it is none's). Revising costs no more
+than it must:
+
+- code taken out takes its wont_reach entries with it, which is not a
+  change to confirm; code moved to another feature takes its confirmed
+  entries along, as merges and splits do;
+- a function more than one feature lists is shared: its branches are
+  covered once, by any of those features' recordings;
+- code added still needs its branches covered (that is what shows it
+  understood), and wont_reach entries added or changed on code that
+  stays are still the person's to confirm.
+
+### Screens: for understanding, beside the quantities
+
+The agent can see the original's frames and the port's at the same
+ticks of a recording (the port's `--replay` screens, which psx web
+already draws), as images it reads, and the guide says to compare them
+once a feature draws: in Fix, when a drawing feature's recording
+differs, and in the Review brief, before the reviewer writes how the
+port looks. A port that does not draw yet says so.
+
+Screens are not compared by psx. What drawing does that can be checked
+becomes quantities in the glossary, recorded and compared exactly like
+any other: the camera's position and angle, the animation playing and
+its frame, the model or sprite shown, the HUD's numbers. Camera,
+animation and HUD are features of their own, with their recordings. The
+person judges the whole look in psx web, as now.
+
 ### Probes: the original's side only
 
 docs/probes-plan.md's steps 4 to 7 (probes in the port, the diff, the
@@ -176,6 +228,12 @@ until, watch, debug_show value and debug_go's write and read take
 - **Groups are computed; merges are the agent's.** A group says what is
   worked together; whether it is one feature is a judgement in game
   terms.
+- **`code` is the agent's to revise.** It is a reading of the original,
+  not a commitment; the person confirms what cannot be shown (wont_reach),
+  not where the agent draws a feature's edges.
+- **Screens are looked at, not scored.** A pixel difference would be a
+  number to fit and would push the port's renderer toward the PS1's GPU;
+  what drawing shows that matters is a quantity.
 
 ## Steps
 
@@ -257,10 +315,13 @@ code (Croc's) shows as the interpreter's functions.
 ### 4. Dependencies seen
 
 Per feature, the features whose code its recordings run; port next's
-catalogue item for one not declared; port status shows both kinds.
+catalogue item for one not declared; port status shows both kinds. port
+next's item for code its recordings run that writes its compared
+quantities (the pointer's writers) and no feature lists.
 
 *Done when* GT2's catalogue shows F-0010's recordings depending on F-0007
-and port next asks for it.
+and port next asks for it, and at 404dbb7 asks where the collision
+response belongs.
 
 ### 5. Groups
 
@@ -277,19 +338,41 @@ groups of one.
 `replaces` and `from` in catalogue entries; confirmation through them;
 verdicts (.psx/verdicts/<id>/), reviews' feature lists, progress.jsonl
 and port next's history read through them; a catalogue item when a group
-forms. catalogue/README.md's rule and that refining is expected.
+forms. Revising `code`: wont_reach entries leave with code taken out
+without a confirmation, follow code moved to another feature, and a
+function several features list is covered once. catalogue/README.md's
+rule, and that refining features and their code is expected; the guide
+says so too.
 
 *Done when* merging two confirmed features into one keeps the goal
 confirmed, keeps their held_out recordings, and port next judges the new
-feature; and a split likewise.
+feature; a split likewise; and moving a function with a confirmed
+wont_reach entry from one feature to another, or taking it out, asks
+nothing of the person.
 
-### 7. A trial on Gran Turismo 2
+### 7. Screens
+
+An argument on an existing command (the tool budget is full) giving the
+original's and the port's frames at chosen ticks of a recording, or a
+few spread over it, as PNGs for read; the port's come from its
+`--replay` screens, as psx web's do, and a port that does not draw says
+so. The guide's Fix and the Review brief say to compare them once a
+feature draws; catalogue/README.md and the glossary's guidance say what
+drawing shows becomes quantities (camera, animation, HUD).
+
+*Done when* on the Croc example a recording's frames come back as both
+games' screens at the same ticks, a port that does not draw says so, and
+the Review brief asks the reviewer to look.
+
+### 8. A trial on Gran Turismo 2
 
 A fresh session from port_next, with the handling features as a group:
-whether it merges them, how it uses the pointer, and its feedback file.
+whether it merges them, revises their code, how it uses the pointer, and
+its feedback file.
 
 *Done when* its feedback says whether the pointer led it to the rule
-without the tick, and whether it worked on a number at any point.
+without the tick, whether it worked on a number at any point, and
+whether it changed a feature's code when it learnt more.
 
 ## Not in this plan
 
