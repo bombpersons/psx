@@ -39,6 +39,43 @@ pub struct RecordingRun {
     pub name: String,
     #[serde(default)]
     pub failures: Vec<String>,
+    /// Where each quantity first differs, for psx web's plot and the
+    /// pointer; never shown to the agent.
+    #[serde(default)]
+    pub differences: Vec<Difference>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct Difference {
+    pub quantity: String,
+    pub at: String,
+}
+
+/// How long a check spends on its pointers, all together.
+const POINTERS: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The recording a pointer is worked out on for `e`: its first work
+/// recording whose quantities differ, with them (in the order they first
+/// differ) and the tick the first differs at.
+fn to_point_at(e: &Entry, report: &ScenarioReport) -> Option<(String, Vec<String>, u64)> {
+    e.recordings.work.iter().find_map(|r| {
+        let (id, name) = r.split_once('/')?;
+        let run = report.scenarios.iter().find(|s| s.id == id)?.recordings.iter().find(|x| x.name == name)?;
+        let mut ds: Vec<(u64, &str)> = run
+            .differences
+            .iter()
+            .filter_map(|d| Some((super::pointer::tick_of(&d.at)?, d.quantity.as_str())))
+            .collect();
+        ds.sort();
+        let at = ds.first()?.0;
+        let mut qs: Vec<String> = Vec::new();
+        for (_, q) in ds {
+            if !qs.iter().any(|x| x == q) {
+                qs.push(q.to_string());
+            }
+        }
+        Some((r.clone(), qs, at))
+    })
 }
 
 /// Each recording the entry names, with what the scenario run found:
@@ -273,19 +310,49 @@ impl PortCheckArgs {
                 }
             }
         }
-        for e in features {
-            let (failures, recordings) = match &ran {
-                Ok(r) => (Vec::new(), recording_results(e, r)),
-                Err(why) => (vec![why.clone()], BTreeMap::new()),
-            };
-            let v = Verdict {
-                feature: e.id.clone(),
-                commit: head.clone(),
-                clean: true,
-                at: crate::stamp::utc_now(),
-                failures,
-                recordings,
-            };
+        let judged: Vec<(&Entry, Verdict)> = features
+            .iter()
+            .map(|e| {
+                let (failures, recordings) = match &ran {
+                    Ok(r) => (Vec::new(), recording_results(e, r)),
+                    Err(why) => (vec![why.clone()], BTreeMap::new()),
+                };
+                let v = Verdict {
+                    feature: e.id.clone(),
+                    commit: head.clone(),
+                    clean: true,
+                    at: crate::stamp::utc_now(),
+                    failures,
+                    recordings,
+                    pointer: None,
+                };
+                (*e, v)
+            })
+            .collect();
+        let passes = |e: &Entry, v: &Verdict| {
+            !e.recordings.work.is_empty() && e.recordings.work.iter().all(|r| v.of(r).is_empty())
+        };
+        let passing: Vec<String> = judged.iter().filter(|(e, v)| passes(e, v)).map(|(e, _)| e.id.clone()).collect();
+        // Where to look, for each feature that fails: worked out on the original.
+        let mut pointers = match &ran {
+            Ok(r) => {
+                let failing: Vec<(&Entry, String, Vec<String>, u64)> = judged
+                    .iter()
+                    .filter(|(e, v)| !passes(e, v))
+                    .filter_map(|(e, _)| to_point_at(e, r).map(|(rec, qs, at)| (*e, rec, qs, at)))
+                    .collect();
+                let other_passing = port.entries.keys().filter(|id| {
+                    !judged.iter().any(|(e, _)| e.id == **id)
+                        && matches!(verdict::state(root, id, Some(&head)), verdict::State::Current(v)
+                            if port.entries[*id].recordings.work.iter().all(|r| v.of(r).is_empty()))
+                });
+                let done: Vec<String> = passing.iter().cloned().chain(other_passing.cloned()).collect();
+                super::pointer::pointers(ctx, &port, &failing, &|id| done.iter().any(|d| d == id), POINTERS)
+            }
+            Err(_) => BTreeMap::new(),
+        };
+        for (e, mut v) in judged {
+            v.pointer = pointers.remove(&e.id);
             verdict::write(root, &v)?;
             // Held-out recordings are counted, not shown: port status shows
             // them once the feature is reviewed.
@@ -294,6 +361,9 @@ impl PortCheckArgs {
                                  "work": work, "held_out": e.recordings.held_out.len()});
             if !v.failures.is_empty() {
                 row["failures"] = json!(v.failures);
+            }
+            if let Some(p) = &v.pointer {
+                row["pointer"] = p.clone();
             }
             verdicts.push(row);
         }

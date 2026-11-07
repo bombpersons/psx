@@ -1067,13 +1067,17 @@ impl Facts {
         let failed =
             |f: &Feature| first_failing(&f.work).or_else(|| first_failing(&f.held_out).filter(|_| f.reviewed()));
         if let Some((f, (r, first))) = self.features.iter().find_map(|f| Some((f, failed(f)?))) {
-            return Item::agent(
+            let mut item = Item::agent(
                 "Fix",
                 Some(&f.id),
                 format!("{r} fails: {first}"),
                 "each of its recordings it is checked against passes at HEAD",
-                "a recording that differs means the original's rule for those quantities is not yet understood, or the feature needs another that is not done: find the original's code that writes them and understand it (the debugger on the recording, checked C), port the rule, commit, and run psx port check",
+                "a recording that differs means the original's rule for those quantities is not yet understood, or the feature needs another that is not done: the pointer names the code that writes them there, its features and its C; understand that code (the debugger on the recording, checked C), port the rule, commit, and run psx port check",
             );
+            if let State::Current(v) = &f.verdict {
+                item.pointer = v.pointer.clone().filter(|p| p["recording"] == r.as_str());
+            }
+            return item;
         }
         // 3b. A system turned off that the port now has: the original's
         // recordings run with it again.
@@ -1608,6 +1612,8 @@ pub struct Item {
     /// The fact that will show it done.
     pub done_when: String,
     pub how: String,
+    /// Where in the original to look (Fix: port check's pointer).
+    pub pointer: Option<Value>,
 }
 
 impl Item {
@@ -1619,6 +1625,7 @@ impl Item {
             why,
             done_when: done_when.into(),
             how: how.into(),
+            pointer: None,
         }
     }
 
@@ -1627,8 +1634,12 @@ impl Item {
     }
 
     fn to_json(&self) -> Value {
-        json!({"item": self.item, "who": self.who, "feature": self.feature, "why": self.why,
-               "done_when": self.done_when, "how": self.how})
+        let mut v = json!({"item": self.item, "who": self.who, "feature": self.feature, "why": self.why,
+               "done_when": self.done_when, "how": self.how});
+        if let Some(p) = &self.pointer {
+            v["pointer"] = p.clone();
+        }
+        v
     }
 }
 
@@ -1898,6 +1909,7 @@ mod tests {
             at: "t".into(),
             failures: vec![],
             recordings: BTreeMap::new(),
+            pointer: None,
         })
     }
 
@@ -1996,6 +2008,7 @@ mod tests {
             at: "t".into(),
             failures: vec![],
             recordings: Default::default(),
+            pointer: None,
         };
         verdict::write(&dir.0, &v).unwrap();
         let state = || Facts::gather(&dir.0).unwrap().features[0].verdict.clone();
@@ -2464,7 +2477,8 @@ mod tests {
             clean,
             at: "t".into(),
             failures: vec![],
-            recordings: [("walk/a".to_string(), vec!["tick 3 x".to_string()])].into(),
+            recordings: [("walk/a".to_string(), vec!["differs from the recording in x".to_string()])].into(),
+            pointer: None,
         };
         let state = || verdict::state(&d.0, "F-0001", Some("abc"));
         assert_eq!(state(), State::Missing);
@@ -2472,7 +2486,10 @@ mod tests {
         let State::Current(now) = state() else { panic!("{:?}", state()) };
         assert_eq!(
             (now.of("walk/a"), now.of("walk/b")),
-            (vec!["tick 3 x".to_string()], vec!["not run by the last psx port check".to_string()])
+            (
+                vec!["differs from the recording in x".to_string()],
+                vec!["not run by the last psx port check".to_string()]
+            )
         );
         verdict::write(&d.0, &v("abc", false)).unwrap();
         assert_eq!(state(), State::Stale { commit: "abc".into() });

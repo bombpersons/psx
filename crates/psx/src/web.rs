@@ -1216,6 +1216,7 @@ pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -
             }
         },
         Some(&mut install),
+        None,
     );
     let v = match (r, failed) {
         (Ok((diffs, m)), None) => {

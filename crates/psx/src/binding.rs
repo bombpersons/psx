@@ -6,6 +6,7 @@
 
 #![allow(unsafe_code)]
 
+use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -164,6 +165,10 @@ struct Ctx<'a> {
     m: Option<&'a Machine>,
     refused: Option<String>,
     out: Vec<u8>,
+    /// The bytes read, by address with its segment folded off.
+    reads: Vec<(u32, u32)>,
+    /// A byte (folded) whose reads come back changed, by this mask.
+    flip: Option<(u32, u8)>,
 }
 
 /// # Safety
@@ -179,7 +184,12 @@ unsafe extern "C" fn host_read(ctx: *mut c_void, addr: u32, out: *mut u8, len: u
         return false;
     };
     match memory(m, addr, len) {
-        Ok(bytes) => {
+        Ok(mut bytes) => {
+            let at = crate::run::fold(addr);
+            c.reads.push((at, len));
+            if let Some((b, mask)) = c.flip.filter(|(b, _)| (at..at + len).contains(b)) {
+                bytes[(b - at) as usize] ^= mask;
+            }
             // SAFETY: the caller's.
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len()) };
             true
@@ -288,11 +298,48 @@ impl<D: serde::de::DeserializeOwned> Plugin<D> {
     pub fn described(&self) -> &D {
         &self.described
     }
+
+    /// The bytes each quantity's value is read from, with the machine as
+    /// it is: a byte the binding read belongs to the quantities whose
+    /// value changes when that byte reads otherwise (inverted, or with its
+    /// low bit flipped where inverting leads a pointer out of memory). At
+    /// most `cap` bytes are tried; addresses have their segment folded off.
+    pub fn reads_by_quantity(&self, m: &Machine, cap: usize) -> Result<BTreeMap<String, Vec<u32>>, String> {
+        let (text, reads) = invoke_with(self.call, abi::QUANTITIES, Some(m), [0; 4], None)?;
+        let parse = |t: &str| serde_json::from_str::<Values>(t).map_err(|e| format!("the binding's answer: {e}"));
+        let base = parse(&text)?;
+        let bytes: std::collections::BTreeSet<u32> = reads.iter().flat_map(|&(a, n)| a..a + n).collect();
+        let mut out: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        for &b in bytes.iter().take(cap) {
+            let changed = [0xFF, 0x01].iter().find_map(|&mask| {
+                invoke_with(self.call, abi::QUANTITIES, Some(m), [0; 4], Some((b, mask)))
+                    .ok()
+                    .and_then(|(t, _)| parse(&t).ok())
+            });
+            for (q, v) in changed.iter().flatten() {
+                if base.get(q) != Some(v) {
+                    out.entry(q.clone()).or_default().push(b);
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Calls the binding's `psx_capture_call` with psx's side of the boundary.
 fn invoke(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<String, String> {
-    let mut ctx = Ctx { m, refused: None, out: Vec::new() };
+    invoke_with(call, what, m, args, None).map(|(out, _)| out)
+}
+
+/// [`invoke`], with the bytes it read, and `flip` changing one byte's reads.
+fn invoke_with(
+    call: Call,
+    what: u32,
+    m: Option<&Machine>,
+    args: [u32; 4],
+    flip: Option<(u32, u8)>,
+) -> Result<(String, Vec<(u32, u32)>), String> {
+    let mut ctx = Ctx { m, refused: None, out: Vec::new(), reads: Vec::new(), flip };
     let host = abi::Host {
         ctx: &mut ctx as *mut Ctx as *mut c_void,
         read: host_read,
@@ -305,7 +352,7 @@ fn invoke(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<
     let code = unsafe { call(what, &host) };
     let out = String::from_utf8_lossy(&ctx.out).into_owned();
     match code {
-        abi::OK => Ok(out),
+        abi::OK => Ok((out, ctx.reads)),
         abi::PANICKED => Err(format!("the binding panicked: {out}")),
         abi::READ_REFUSED => Err(ctx.refused.take().unwrap_or_else(|| "a read was refused".into())),
         c => Err(format!("the binding gave code {c} for question {what}")),
@@ -314,7 +361,7 @@ fn invoke(call: Call, what: u32, m: Option<&Machine>, args: [u32; 4]) -> Result<
 
 /// The binding's answer for a set of quantities, as values of their
 /// `types`; each problem is `(quantity, problem)`.
-pub fn values(text: &str, types: &std::collections::BTreeMap<String, Type>) -> Result<Values, Vec<(String, String)>> {
+pub fn values(text: &str, types: &BTreeMap<String, Type>) -> Result<Values, Vec<(String, String)>> {
     let v: Values =
         serde_json::from_str(text).map_err(|e| vec![(String::new(), format!("the binding's answer: {e}"))])?;
     let mut problems = Vec::new();

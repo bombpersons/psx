@@ -21,6 +21,7 @@ mod confirm;
 mod init;
 pub mod manifest;
 pub mod next;
+mod pointer;
 pub mod process;
 pub mod review;
 pub mod vectors;

@@ -237,6 +237,23 @@ share_in_c). Bounded in time; one recording per feature per check.
 surface and grip functions and F-0007, and after the trial's fix
 (404dbb7) the collision response's code and its feature.
 
+**Done** (2026-11-07). `port/pointer.rs`: per failing feature, its first
+work recording that differs is replayed on the original to the end of
+the first differing tick. A quantity's bytes are those the binding read
+whose change (inverted, or the low bit where that leads a pointer out of
+memory) changes its value; writers are the stores into them in the 4
+ticks before (else each byte's last writer), first_run the words and
+branch ways run first there, by inventory function, each with its
+features and C; with_c replays it with the checked C. evidence reads
+whose code each shown function is. Kept in the verdict, shown in
+port_check's rows and port next's Fix; one replay per recording, 300 s
+for all. On GT2 at 0180540, offroad names sum_wheel_speeds (F-0007,
+checked, replays with it), update_wheel_surface_samples and
+wheel_tyre_force (no feature); at 404dbb7 its first first_run function,
+called first, is 0x800340A4, the trial's collision response
+(0x80034134), in no feature's code. The whole check took 95 s. Script
+code (Croc's) shows as the interpreter's functions.
+
 ### 4. Dependencies seen
 
 Per feature, the features whose code its recordings run; port next's

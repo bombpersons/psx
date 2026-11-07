@@ -1044,6 +1044,7 @@ fn check_one(
                 std::time::Duration::from_secs(a.timeout),
                 &mut |_, _| {},
                 Some(&mut prepare),
+                None,
             )?;
             let calls = m.redirects.hits(original);
             for (call, state) in m.redirects.kept(original) {

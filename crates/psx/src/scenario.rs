@@ -356,7 +356,8 @@ pub(crate) struct Cover {
 /// the pad is the one that tick had, and the run lasts as many ticks. A game
 /// that falls a field behind, or catches up, on another route then reads
 /// each press on the same tick. `cover` sees every instruction run, from
-/// the start. `on_tick` sees the machine at the end of each recorded tick.
+/// the start. `on_tick` sees the machine at the end of each recorded tick;
+/// `look` sees the run as an observer of its own, after the recorder.
 #[allow(clippy::too_many_arguments)]
 fn record(
     m: &mut Machine,
@@ -367,6 +368,7 @@ fn record(
     deadline: Duration,
     cover: Option<&mut Cover>,
     on_tick: Option<OnTick<'_>>,
+    look: Option<&mut dyn Observer>,
 ) -> Recorded {
     let started = Instant::now();
     let mut out = Recorded {
@@ -396,6 +398,9 @@ fn record(
             s.observe(Covering { c, binding: q.binding });
         }
         s.observe(Recorder { q, out: &mut out, on_tick });
+        if let Some(look) = look {
+            s.observe(Lent(look));
+        }
         let lead_limit = s.m.bus.frames + frames as u64;
         let mut timed_out = false;
         match s.lead_in(lead_limit, started, deadline) {
@@ -418,6 +423,24 @@ fn record(
     out.timed_out = timed_out;
     out.adjusted = adjusted;
     out
+}
+
+/// An observer the caller keeps.
+struct Lent<'a>(&'a mut dyn Observer);
+
+impl Observer for Lent<'_> {
+    fn per_step(&self) -> bool {
+        self.0.per_step()
+    }
+    fn step(&mut self, info: &psx_core::cpu::StepInfo, m: &mut Machine) -> crate::session::Flow {
+        self.0.step(info, m)
+    }
+    fn tick(&mut self, rel: u64, m: &mut Machine) -> crate::session::Flow {
+        self.0.tick(rel, m)
+    }
+    fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// The recording's coverage: every instruction run, and the scripts.
@@ -693,7 +716,7 @@ fn reach_end(m: &mut Machine, l: &Loaded, q: &Quantities, from: &str, deadline: 
     for (n, frames, events, adjust) in continued(l, from).map_err(Error::invalid)? {
         // Each as it was recorded.
         let q = Quantities { binding: q.binding, types: q.types.clone(), kept: q.kept.clone(), adjust };
-        let r = record(m, &q, frames, &events, None, deadline, None, None);
+        let r = record(m, &q, frames, &events, None, deadline, None, None, None);
         if let Some(why) = unrecorded(&r) {
             return Err(Error::invalid(format!(
                 "replaying {n} to continue from its end gave no recording: {}",
@@ -744,7 +767,7 @@ impl Prepared {
         let root = &ctx.root;
         let mut cover =
             Cover { tracer: tracer(m), scripts: crate::script_cover::Scripts::new(&self.b.described().hooks) };
-        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover), None);
+        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover), None, None);
         if let Some(why) = unrecorded(&r) {
             return Ok((false, why));
         }
@@ -1021,7 +1044,7 @@ fn determinism(ctx: &Ctx, id: &str, timeout: Duration) -> crate::Result<Json> {
             reach_end(&mut m, &l, &q, from, timeout)?;
         }
         let pads = held_by_tick(&events, &rec.expand());
-        let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None, None);
+        let r = record(&mut m, &q, frames, &events, Some(&pads), timeout, None, None, None);
         let (diffs, schedule) = match unrecorded(&r) {
             Some(why) => (
                 vec![format!("the second route gave no recording: {}", why["status"].as_str().unwrap_or(""))],
@@ -1119,7 +1142,7 @@ fn adjust_check(ctx: &Ctx, id: &str, mut adjust: Adjustments, off: bool, timeout
             if let Some(from) = rec.header.producer.details.get("from").and_then(Json::as_str) {
                 reach_end(&mut m, &l, &q, from, timeout)?;
             }
-            Ok(record(&mut m, &q, frames, &events, Some(&pads), timeout, None, None))
+            Ok(record(&mut m, &q, frames, &events, Some(&pads), timeout, None, None, None))
         };
         let (stock, adjusted) = (run(Adjustments::stock())?, run(adjust.clone())?);
         let differences = match (unrecorded(&stock), unrecorded(&adjusted)) {
@@ -1398,6 +1421,7 @@ pub(crate) fn replay(
     timeout: Duration,
     on_tick: OnTick<'_>,
     prepare: Option<&mut dyn FnMut(&mut Machine)>,
+    look: Option<&mut dyn Observer>,
 ) -> crate::Result<(Vec<String>, Machine)> {
     let c = Captured::load(ctx, id, name)?;
     let rec = c.recording();
@@ -1412,7 +1436,7 @@ pub(crate) fn replay(
     if let Some(prepare) = prepare {
         prepare(&mut m);
     }
-    let r = record(&mut m, &q, c.frames, &c.events, Some(&c.pads), timeout, None, Some(on_tick));
+    let r = record(&mut m, &q, c.frames, &c.events, Some(&c.pads), timeout, None, Some(on_tick), look);
     let d = match unrecorded(&r) {
         Some(why) => vec![format!("the replay gave no recording: {}", why["status"].as_str().unwrap_or(""))],
         None => {
@@ -1467,7 +1491,7 @@ pub(crate) fn with_c(
     let (mut steps, mut in_c) = (0u64, 0u64);
     for name in names {
         let mut prepare = |m: &mut Machine| d.install(m);
-        let (diffs, m) = replay(ctx, id, &name, timeout, &mut |_, _| {}, Some(&mut prepare))?;
+        let (diffs, m) = replay(ctx, id, &name, timeout, &mut |_, _| {}, Some(&mut prepare), None)?;
         let report = d.report(&m);
         steps += report["steps"].as_u64().unwrap_or(0);
         in_c += report["steps_in_c"].as_u64().unwrap_or(0);
@@ -1475,7 +1499,7 @@ pub(crate) fn with_c(
         if diffs.is_empty() {
             r["status"] = json!("same");
         } else {
-            let (without, _) = replay(ctx, id, &name, timeout, &mut |_, _| {}, None)?;
+            let (without, _) = replay(ctx, id, &name, timeout, &mut |_, _| {}, None, None)?;
             if without.is_empty() {
                 ok = false;
                 r["status"] = json!("diverges_with_c");
@@ -2057,7 +2081,7 @@ pub struct Quantities {
     fn two_reads(keep: psx_core::padflow::test_program::Keep, adjust: Adjustments, fields: u32) -> Recorded {
         let (mut m, b, types, events) = two_reads_game(keep, fields);
         let q = Quantities { binding: &b, types, kept: vec!["x".into(), "dead".into()], adjust };
-        record(&mut m, &q, fields, &events, None, Duration::from_secs(120), None, None)
+        record(&mut m, &q, fields, &events, None, Duration::from_secs(120), None, None, None)
     }
 
     /// TwoReads' game, its binding and quantities' types, and input for `fields` fields.
@@ -2172,7 +2196,7 @@ pub struct Quantities {
             adjust: Adjustments::default_set(),
         };
         let pads = held_by_tick(&events, &recorded.ticks);
-        let replayed = record(&mut m, &q, fields, &events, Some(&pads), deadline, None, None);
+        let replayed = record(&mut m, &q, fields, &events, Some(&pads), deadline, None, None, None);
         assert_eq!(replayed.ticks.len(), recorded.ticks.len());
         assert_eq!(s.adjust.as_ref().unwrap().report(&s.m), replayed.adjusted);
         assert_eq!(s.m.bus.ram, m.bus.ram);
@@ -2259,7 +2283,7 @@ pub struct Quantities {
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
-        record(&mut m, &q, fields, &[], None, Duration::from_secs(120), None, None)
+        record(&mut m, &q, fields, &[], None, Duration::from_secs(120), None, None, None)
     }
 
     /// A game that calls a function returning 7 each tick and keeps what
@@ -2297,7 +2321,7 @@ pub struct Quantities {
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
-        record(&mut m, &q, 1, &[], None, Duration::from_secs(60), None, None)
+        record(&mut m, &q, 1, &[], None, Duration::from_secs(60), None, None, None)
     }
 
     #[test]
@@ -2399,7 +2423,7 @@ pub struct Quantities {
         let events: Vec<crate::replay::Input> = (0..60)
             .map(|f| crate::replay::Input { frame: f, buttons: if f % 6 < 3 { cross } else { 0 }, sticks: [128; 4] })
             .collect();
-        let r = record(&mut m, &q, 60, &events, None, Duration::from_secs(120), None, None);
+        let r = record(&mut m, &q, 60, &events, None, Duration::from_secs(120), None, None, None);
         assert_eq!(r.refusal_count, 0, "{:?}", r.refusals);
         r
     }
@@ -2449,7 +2473,7 @@ pub struct Quantities {
         let types: BTreeMap<String, Type> =
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust };
-        record(&mut m, &q, 1, &[], None, Duration::from_secs(60), None, None)
+        record(&mut m, &q, 1, &[], None, Duration::from_secs(60), None, None, None)
     }
 
     #[test]
@@ -2526,7 +2550,7 @@ pub struct Quantities {
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust: Adjustments::stock() };
         let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&Default::default()) };
-        let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut c), None);
+        let r = record(&mut m, &q, 1, &[], None, Duration::from_secs(60), Some(&mut c), None, None);
         let t = &c.tracer;
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert_eq!(r.initial, Some([("x".to_string(), psx_scenario::Value::Int(1))].into()));
@@ -2628,7 +2652,7 @@ pub struct Quantities {
             [("x".to_string(), Type::Int { bits: 32, signed: true }), ("dead".to_string(), Type::Bool)].into();
         let q = Quantities { binding: &b, types, kept: vec!["x".into()], adjust: Adjustments::stock() };
         let mut c = Cover { tracer: tracer(&mut m), scripts: crate::script_cover::Scripts::new(&b.described().hooks) };
-        let r = record(&mut m, &q, 2, &[], None, Duration::from_secs(60), Some(&mut c), None);
+        let r = record(&mut m, &q, 2, &[], None, Duration::from_secs(60), Some(&mut c), None, None);
         assert_eq!((r.refusal_count, r.timed_out), (0, false), "{:?}", r.refusals);
         assert!(c.scripts.problems().is_empty(), "{:?}", c.scripts.problems());
         let toy = &c.scripts.programs["toy"];

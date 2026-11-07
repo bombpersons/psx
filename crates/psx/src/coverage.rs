@@ -669,7 +669,7 @@ fn rel_path(ctx: &Ctx, p: &Path) -> String {
 
 /// Whether `i` is a conditional branch: one that can both be taken and fall
 /// through (`beq zero, zero` always jumps, `bne zero, zero` never does).
-fn conditional(i: u32) -> bool {
+pub(crate) fn conditional(i: u32) -> bool {
     let (rs, rt) = ((i >> 21) & 31, (i >> 16) & 31);
     match i >> 26 {
         0x01 => rs != 0 && matches!(rt, 0x00 | 0x01 | 0x10 | 0x11),

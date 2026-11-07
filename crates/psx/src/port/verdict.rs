@@ -24,9 +24,12 @@ pub struct Verdict {
     #[serde(default)]
     pub failures: Vec<String>,
     /// Each recording the entry names (`<scenario>/<name>`), with the
-    /// first tick each quantity differs at, or why it did not run; empty
-    /// when it passed.
+    /// quantities that differ, or why it did not run; empty when it
+    /// passed.
     pub recordings: BTreeMap<String, Vec<String>>,
+    /// Where in the original to look, when it fails (the pointer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer: Option<serde_json::Value>,
 }
 
 impl Verdict {

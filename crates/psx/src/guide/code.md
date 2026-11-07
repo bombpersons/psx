@@ -135,6 +135,22 @@ the quantities that differ (differs_in), is a recording that replays as
 recorded without the C and not with it: a function it replaces does not
 do what the original's does there.
 
+port_check gives a failing feature a pointer, worked out on one of its
+recordings replayed on the original, at the first difference: for each
+quantity that differs, the bytes the binding reads for it (reads), the
+functions that stored into them just before (writers; written_before
+where none did lately), and the code run there for the first time in
+the recording (first_run, called_first when the function itself is
+new). Each function comes with the features whose code lists it and its
+C (checked, unchecked, none), and with_c says whether the recording
+replays with the checked C. evidence reads it: another feature's code
+not done (the features depend on each other), this feature's code with
+no checked C (the rule is not understood yet), or checked C that
+replays it (the rule is known there: the port does not follow it, or
+what is around it differs). port next's Fix carries it. It is a place
+to look, not the moment: debug_start on the recording finds that (a pc
+stop at a writer, a watch on reads).
+
 fixes/ holds C that changes what the game does on purpose, most often so
 the game takes its input every tick where its driver delays it
 (late_input, topic run; port next asks for it): a function there replaces the game's function of that name (in the executable, not
