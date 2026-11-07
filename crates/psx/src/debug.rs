@@ -141,6 +141,20 @@ pub struct DebugGoArgs {
     #[arg(long)]
     #[serde(default)]
     pub instructions: Option<u64>,
+    /// The end of the first whole field from here that draws: any (fills
+    /// too), primitives or textured. Captures it as gpu does.
+    #[arg(long, value_enum)]
+    #[serde(default)]
+    pub draw: Option<crate::run_native::gpu_capture::GpuDrawFilter>,
+    /// Capture the GPU commands of the first whole field from here
+    /// (debug_show gpu).
+    #[arg(long)]
+    #[serde(default)]
+    pub gpu: bool,
+    /// Trace the instructions run to the stop, as run's trace does.
+    #[arg(long)]
+    #[serde(default)]
+    pub trace: bool,
     /// Keep the last N instructions.
     #[arg(long)]
     #[serde(default)]
@@ -182,6 +196,15 @@ pub struct DebugShowArgs {
     #[arg(long)]
     #[serde(default)]
     pub stops: bool,
+    /// The last GPU capture (debug_go gpu or draw).
+    #[arg(long)]
+    #[serde(default)]
+    pub gpu: bool,
+    /// The hardware now: CD commands, SPU, unhandled I/O, interrupts, and
+    /// the hot PCs and I/O of the next two fields.
+    #[arg(long)]
+    #[serde(default)]
+    pub hardware: bool,
 }
 
 #[derive(clap::Args, Clone, Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -316,6 +339,11 @@ struct Open {
 
 fn stop_file(dir: &Path, n: usize, ext: &str) -> PathBuf {
     dir.join("stops").join(format!("{n}.{ext}"))
+}
+
+/// The files a go wrote on its way to stop `n` (GPU capture, trace).
+fn stop_dir(dir: &Path, n: usize) -> PathBuf {
+    dir.join("stops").join(n.to_string())
 }
 
 impl Open {
@@ -580,10 +608,10 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
         ticked: 0,
         found: Rc::default(),
     };
-    let watched = stops.per_step() || !stops.until.is_empty() || a.fields.is_some();
+    let watched = stops.per_step() || !stops.until.is_empty() || a.fields.is_some() || a.draw.is_some();
     if !watched {
         return Err(Error::invalid(
-            "debug_go: name a stop (pc, write, read, until, tick, fields, ticks or instructions)",
+            "debug_go: name a stop (pc, write, read, until, tick, draw, fields, ticks or instructions)",
         ));
     }
     if (a.tick || a.ticks.is_some()) && o.s.tick.is_none() {
@@ -594,19 +622,74 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
     o.s.observe(stops);
     let limit = a.limit.unwrap_or(3600).max(1);
     let fields = a.fields.map_or(limit, |f| f.min(limit));
+    // What the go keeps on its way goes beside the stop it makes.
+    let n = o.book.stops.len();
+    let kept = stop_dir(&o.dir, n);
+    let keeps = a.gpu || a.draw.is_some() || a.trace;
+    if keeps {
+        let _ = std::fs::remove_dir_all(&kept);
+        std::fs::create_dir_all(&kept).map_err(|e| Error::io(&kept, e))?;
+    }
+    if a.gpu || a.draw.is_some() {
+        let n = u32::try_from(fields).unwrap_or(u32::MAX);
+        let capture = crate::run_native::gpu_capture::GpuCapture::new(0, a.draw, n, n);
+        let mut gpu = crate::run_native::observe::Gpu { capture, start: None, stop: a.draw.is_some() };
+        // A stop at a field's start (until, draw): that field is the first from here.
+        let place = o.s.place();
+        if place.driver_due && place.last_field == o.s.m.bus.frames {
+            gpu.field(o.s.rel(), &mut o.s.m)?;
+        }
+        o.s.observe(gpu);
+    }
+    if a.trace {
+        let scopes = Rc::new(crate::load_symbols(&[])?);
+        let trace = crate::run::TraceArgs { trace: true, ..Default::default() };
+        let t = crate::run_native::tracer(&trace, 200_000, &scopes, o.s.m.bus.frames, &kept)?;
+        let t = crate::run_native::observe::Trace::new(&mut o.s.m, t, scopes);
+        o.s.observe(t);
+    }
     let target = o.s.m.bus.frames + fields;
     let deadline = Duration::from_secs(a.timeout.unwrap_or(120));
     let ended = o.s.advance(target, Instant::now(), deadline)?;
-    o.s.observers.clear();
     let why = match ended {
         crate::session::Ended::Limit if a.fields.is_some_and(|f| f <= limit) => "fields",
         crate::session::Ended::Limit => "limit",
         e => e.termination(),
     };
     let found = std::mem::take(&mut *found.borrow_mut());
+    let mut detail = found.detail;
+    if keeps {
+        let rel = o.s.rel();
+        for ob in &mut o.s.observers {
+            ob.last_field(rel, &mut o.s.m, false)?;
+        }
+        let (mut files, mut report) = (serde_json::Map::new(), serde_json::Map::new());
+        let start = o.s.start;
+        let mut out = Out { dir: &kept, files: &mut files, report: &mut report, start, termination: why };
+        for ob in std::mem::take(&mut o.s.observers) {
+            ob.finish(&o.s.m, &mut out)?;
+        }
+        report.insert("files".into(), Value::Object(files));
+        write_json(&kept.join("report.json"), &report)?;
+        if detail.is_null() {
+            detail = json!({});
+        }
+        detail["dir"] = json!(kept);
+        if let Some(g) = report.get("gpu_frame") {
+            let keys = ["status", "reason", "absolute_frame", "complete", "draw_commands", "content", "commands"];
+            detail["gpu"] =
+                Value::Object(keys.iter().filter_map(|&k| g.get(k).map(|v| (k.into(), v.clone()))).collect());
+        }
+        if let Some(t) = report.get("trace") {
+            detail["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"],
+                "lines_dropped": t["lines_dropped"], "file": kept.join("trace.txt")});
+        }
+    }
+    o.s.observers.clear();
     let call = json!({"go": {"pc": a.pc, "write": a.write, "read": a.read, "until": a.until, "tick": a.tick,
+        "draw": a.draw, "gpu": a.gpu, "trace": a.trace,
         "fields": a.fields, "ticks": a.ticks, "instructions": a.instructions, "limit": a.limit}});
-    let v = o.stop(why, call, found.detail)?;
+    let v = o.stop(why, call, detail)?;
     if !found.history.is_empty() {
         let lines: Vec<Value> = found
             .history
@@ -631,7 +714,8 @@ impl Op for DebugShowArgs {
 fn show(ctx: &Ctx, a: DebugShowArgs) -> crate::Result<Value> {
     let mut o = Open::load(&ctx.root, &a.which)?;
     let mut v = json!({"at": o.current()});
-    let nothing = a.values.is_empty() && a.bytes.is_none() && !a.history && !a.screen && !a.stops;
+    let nothing =
+        a.values.is_empty() && a.bytes.is_none() && !a.history && !a.screen && !a.stops && !a.gpu && !a.hardware;
     if a.registers || nothing {
         v["registers"] = Value::Object(crate::run_native::registers(&o.s.m));
     }
@@ -659,7 +743,36 @@ fn show(ctx: &Ctx, a: DebugShowArgs) -> crate::Result<Value> {
         v["stops"] = json!(o.book.stops);
         v["current"] = json!(o.book.current);
     }
+    if a.gpu {
+        v["gpu"] = gpu_capture(&o)?;
+    }
+    if a.hardware {
+        // Last: the two fields it looks ahead run on this copy of the stop.
+        let disc = o.book.media.clone();
+        let mut h = crate::native::hardware(&mut o.s.m, disc.as_deref());
+        h["next_fields"] = crate::native::hot(&mut o.s.m, 2);
+        v["hardware"] = h;
+    }
     Ok(o.result(v))
+}
+
+/// The GPU capture of the go that came to this stop, or the latest before it.
+fn gpu_capture(o: &Open) -> crate::Result<Value> {
+    let mut at = Some(o.book.current);
+    while let Some(n) = at {
+        let dir = stop_dir(&o.dir, n);
+        let report = dir.join("report.json");
+        if report.is_file() {
+            let r: Value = read_json(&report)?;
+            if !r["gpu_frame"].is_null() {
+                let files: Vec<&String> = r["files"].as_object().map(|f| f.keys().collect()).unwrap_or_default();
+                return Ok(json!({"stop": n, "dir": dir, "capture": r["gpu_frame"], "files": files,
+                    "textures": "assets_textures with run_dir = dir decodes its texture pages"}));
+            }
+        }
+        at = o.book.stops[n]["from"].as_u64().map(|f| f as usize);
+    }
+    Ok(json!("none: debug_go gpu or draw captures a field's GPU commands"))
 }
 
 /// Each value now, by name, as sample would write it.
@@ -734,13 +847,17 @@ fn set(ctx: &Ctx, a: DebugSetArgs) -> crate::Result<Value> {
     if a.poke.is_empty() && a.register.is_empty() && a.pad.is_none() {
         return Err(Error::invalid("debug_set: give poke, register or pad"));
     }
+    let mut written = Vec::new();
     for p in &a.poke {
         if p.contains('@') {
             return Err(Error::invalid(format!("poke {p:?}: debug_set writes here; leave out @FRAME")));
         }
-        let mut k = crate::ram::parse_poke(p).map_err(Error::invalid)?;
+        let k = crate::ram::parse_poke(p).map_err(Error::invalid)?;
         let m = &mut o.s.m;
-        k.apply(0, &mut m.bus.ram, &mut m.bus.scratch);
+        k.apply(&mut m.bus.ram, &mut m.bus.scratch);
+        // Code the poke changed runs as changed.
+        m.bus.ram_written_range(0, psx_core::bus::RAM_SIZE);
+        written.push(k.report());
     }
     for r in &a.register {
         register(&mut o.s.m, r)?;
@@ -770,7 +887,8 @@ fn set(ctx: &Ctx, a: DebugSetArgs) -> crate::Result<Value> {
         }
     }
     let call = json!({"set": serde_json::to_value(&a).unwrap_or_default()});
-    let v = o.stop("set", call, Value::Null)?;
+    let detail = if written.is_empty() { Value::Null } else { json!({"poked": written}) };
+    let v = o.stop("set", call, detail)?;
     Ok(o.result(v))
 }
 

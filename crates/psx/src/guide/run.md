@@ -5,10 +5,9 @@ it the run boots from power-on. run never downloads.
 
 ## Frames and input
 
-frames, input, poke, gpu_frame and trace windows count from the run start
-(run_frame); frame in logs is absolute (since power-on, or the state's own
-origin). Row N of a sample is memory after N fields, before field N's input
-and pokes.
+frames, input and trace windows count from the run start (run_frame);
+frame in logs is absolute (since power-on, or the state's own origin). Row
+N of a sample is memory after N fields, before field N's input.
 
 input is an inline JSON array of whole held pad states; replay is a file
 with the same array. Choose one.
@@ -99,7 +98,7 @@ recorded values beside whatever else it samples.
 
 ## Memory formats
 
-sample, until and poke read memory as ADDR:FMT. FMT is u8 i8 x8 u16 i16 x16
+sample, until and debug_set's poke read memory as ADDR:FMT. FMT is u8 i8 x8 u16 i16 x16
 u32 i32 x32, fxI.F (fx16.16, fx4.12), bits of a word (u16[14] is bit 14 as 0
 or 1, u8[4..7] bits 4 to 7 as a number; a poke writes those bits alone), a
 byte string strN (printable ASCII as itself, other bytes as \xNN, trailing
@@ -132,8 +131,6 @@ zeros left off; until takes = and != only) or a width 1/2/4.
 - watch ADDR[:WIDTH]: every CPU and DMA store into the range, with the
   writer's PC and old and new values (writes.jsonl); watch_changes_only
   drops same-value stores. watch_reads LO-HI: CPU loads with PC (reads.jsonl).
-- poke ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..] writes memory at the start
-  of a field to test a hypothesis; keep an unmodified run to compare.
 - trace: trace.txt (windowed by trace_from_frame / trace_range), and for
   coverage and the inventory code.bin (each RAM page's code as it ran),
   executed.bin, branches.bin (each conditional branch's ways taken) and
@@ -148,17 +145,16 @@ zeros left off; until takes = and != only) or a width 1/2/4.
   assets). audio: audio.wav of what the console plays.
 - profile: CPU cycles by function, with calls and the hottest instruction;
   time in the VSync wait shows how much of each frame is idle.
-- gpu_frame N captures one frame's GPU commands; gpu_next_draw searches for
-  one that draws (topic assets). snapshot_every saves screens.
-- save_state writes state.bin at the end, save_state_at state_fNNNNNN.bin at
-  chosen fields; save_as NAME names it (topic setup).
+- snapshot_every saves screens.
+- save_state writes state.bin at the end; save_as NAME names it (topic
+  setup).
 - memcard1/memcard2 take a .mcd or new (written cards are saved in the run
   directory); pad dualshock enables sticks.
 
 ## Results
 
-report.json in run_dir is the whole report; brief gives a summary with the
-files, summary only status, frames, paths and counts. status partial with
+report.json in run_dir is the whole report; summary gives only status,
+frames, paths and counts. status partial with
 termination timeout means the wall-clock budget ran out (frames.reached).
 complete with frames_reached means the budget was met, not that the game
 reached gameplay. Warnings: no_gpu_draws (nothing drawn lately: a still
@@ -201,5 +197,10 @@ blocks until they write (at most an hour; after --text, until they
 answer) and prints what they wrote: run in the background, it ends when
 they do, which is a way to hear from them while nothing else runs.
 
-diagnose is an emulator diagnostic for psx's own development, not for
-reading a game.
+## In the debugger
+
+Stopping at a PC, a store or a load, the instructions before a stop, a
+trace from a PC, a field's GPU commands, a state partway through, writing
+memory or registers to test a hypothesis, and the hardware's view (CD
+commands, unhandled I/O, hot PCs: psx's own development) are the
+debugger's (topic debug).

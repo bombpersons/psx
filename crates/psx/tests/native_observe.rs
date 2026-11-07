@@ -1,4 +1,4 @@
-//! Per-frame samples and pokes against real game data (Mega Man 8 PAL, the
+//! Per-frame samples, and a debugger poke, against real game data (Mega Man 8 PAL, the
 //! in-stage state of research/case-study-megaman8.md). Needs the local data:
 //!
 //! ```bash
@@ -31,7 +31,7 @@ fn run(root: &Path, out: &Path, extra: &[&str]) -> Value {
         replay.to_str().unwrap(),
         "--out",
         out.to_str().unwrap(),
-        "--brief",
+        "--summary",
     ];
     args.extend_from_slice(extra);
     let o = Command::new(BIN).args(&args).env("PSX_ROOT", root).output().unwrap();
@@ -81,11 +81,30 @@ fn samples_reproduce_the_recorded_jump_and_pokes_take_effect() {
     assert_eq!(ys.last().unwrap(), "441.15625", "the landing keeps the sub-pixel (a halfword store into the word)");
 
     // The high-jump flag (+0x8A), poked after the press tick clears it: take-off speed 0x669D8.
-    let mut args = vec!["--frames", "3", "--poke", "8015E926=1:1@1"];
-    args.extend_from_slice(&samples);
-    let r = run(&root, &dir.join("hj"), &args);
-    assert_eq!(r["pokes"][0]["applied"], 1, "{r}");
-    let csv = std::fs::read_to_string(dir.join("hj/samples.csv")).unwrap();
-    assert_eq!(column(&csv, "vy")[2], "6.1634521484375", "6.4134521484375 - 0.25");
+    let replay = dir.join("hj.json");
+    std::fs::write(&replay, r#"[{"frame": 0, "buttons": ["CROSS"]}]"#).unwrap();
+    let debug = |args: &[&str]| -> Value {
+        let o = Command::new(BIN).arg("debug").args(args).env("PSX_ROOT", &root).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    let started = debug(&[
+        "start",
+        "media/Mega Man 8.cue",
+        "--bios",
+        "bios/scph7502.bin",
+        "--from-state",
+        ".psx/mm8-study/s3900/state.bin",
+        "--replay",
+        replay.to_str().unwrap(),
+    ]);
+    let id = started["id"].as_str().unwrap().to_string();
+    debug(&["go", "--id", &id, "--fields", "1"]);
+    debug(&["set", "--id", &id, "--poke", "8015E926=1:1"]);
+    debug(&["go", "--id", &id, "--fields", "1"]);
+    let shown = debug(&["show", "--id", &id, "--value", "8015E8B4:fx16.16:vy"]);
+    let vy = shown["values"]["vy"].to_string();
+    assert_eq!(vy.trim_matches('"'), "6.1634521484375", "6.4134521484375 - 0.25: {shown}");
+    debug(&["end", "--id", &id]);
     let _ = std::fs::remove_dir_all(&dir);
 }

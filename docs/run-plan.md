@@ -341,6 +341,34 @@ step that keeps a state at field N becomes a step of N fields, and
 
    *Done when* every chain in the workspaces rebuilds to the
    same state sha256, and the guide's run topic is shorter than now.
+
+   *Done (2026-11-07).* run has no diagnose, break, tail, max_steps,
+   watch_after, gpu_*, trace_start, save_state_at, poke or brief.
+   debug_go draw (any, primitives, textured) stops at the end of the
+   first whole field that draws and captures it; gpu captures the first
+   whole field from the stop; trace traces the go as run's trace does.
+   Each keeps its files in the stop's directory, `stops/<n>/`, with a
+   report.json, so assets_textures takes it as run_dir. debug_show gpu
+   gives the latest capture on the way back through the stops, and
+   hardware gives what diagnose reported (CD commands, SPU, unhandled
+   I/O, DMA, interrupts, and the hot PCs and I/O of the next two
+   fields, `native::hardware` and `native::hot`). debug_set's poke is
+   `ADDR=VALUE[:WIDTH|:FMT]`. The GPU capture and trace are observers
+   that run_native and the debugger share (`observe::Gpu`,
+   `run_native::tracer`). `states rebuild` rewrites a step that kept a
+   state at field N as a step of N fields with the input before N
+   (`states::upgrade`) and writes the chain back when the state is the
+   same. The run topic is 12025 bytes, down from 12136, and says what
+   is in the debugger now; assets and debug say how to capture a field.
+   The run-based GPU capture test is now a debugger test (no draw ends
+   at the limit with not_found; a draw after a poke stops and is
+   captured; show gpu and assets_textures read it). Croc smoke test:
+   draw textured, then trace and show hardware. All 18 chains (GT2 8,
+   Croc 6, Tomb Raider Chronicles 4) rebuild to the same sha256s; GT2's
+   b_license_tests, f0010_cd_trace and license_menu now start with a
+   1500-field step (the press at 500 and release at 512 kept). The Mega
+   Man 8 test's poke is a debugger poke now, but its state is an old
+   format (8) that the core no longer loads, so it did not run.
 8. **A trial.** GT2's agent chases a divergence with the debugger.
 
    *Done when* its feedback file says what it used and what it

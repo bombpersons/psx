@@ -1,5 +1,5 @@
 //! RAM analysis for gameplay reverse engineering: value formats, per-frame
-//! samples and pokes for `psx run`, and `psx ram
+//! samples for `psx run`, pokes for debug_set, and `psx ram
 //! diff/search/view` over `ram.bin` snapshots from several runs.
 //!
 //! Addresses are hex (`8015E8A8`, `0x8015E8A8`, any KUSEG/KSEG0/KSEG1
@@ -825,29 +825,20 @@ impl Quantities {
     }
 }
 
-/// One `--poke ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`.
+/// One debug_set poke, `ADDR=VALUE[:WIDTH|:FMT]`.
 #[derive(Clone, Debug)]
 pub struct Poke {
-    pub spec: String,
     /// Where it writes, as a sample would read it.
     pub at: Sample,
     pub value: Val,
-    pub from: u64,
-    /// Last run frame (inclusive) to apply at; `None` = open-ended.
-    pub to: Option<u64>,
-    pub applied: Vec<u64>,
 }
 
 impl Poke {
-    pub fn due(&self, run_frame: u64) -> bool {
-        run_frame >= self.from && self.to.is_none_or(|t| run_frame <= t)
-    }
-
     pub fn width(&self) -> usize {
         self.at.fmt.width()
     }
 
-    pub fn apply(&mut self, run_frame: u64, ram: &mut [u8], scratch: &mut [u8]) {
+    pub fn apply(&self, ram: &mut [u8], scratch: &mut [u8]) {
         // A bit field keeps the word's other bits as they are now.
         let m = self.at.mem;
         let (mem, o) = match m {
@@ -861,19 +852,11 @@ impl Poke {
                 write_le(mem, o, self.width(), word)
             }
         }
-        self.applied.push(run_frame);
     }
 
     pub fn report(&self) -> Value {
-        let n = self.applied.len();
         let w = self.width();
-        let mut v = json!({
-            "spec": self.spec,
-            "width": w, "value": self.at.fmt.value(&self.value),
-            "run_frames": {"from": self.from, "to": self.to},
-            "applied": n,
-            "first_run_frame": self.applied.first(), "last_run_frame": self.applied.last(),
-        });
+        let mut v = json!({"width": w, "value": self.at.fmt.value(&self.value)});
         if let Val::Num(n) = self.value {
             v["value"] = json!(n);
             v["value_hex"] = json!(format!("0x{n:0w$X}", w = w * 2));
@@ -885,54 +868,31 @@ impl Poke {
     }
 }
 
-/// A poke: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`.
+/// A poke: `ADDR=VALUE[:WIDTH|:FMT]`.
 pub fn parse_poke(s: &str) -> Result<Poke, String> {
-    let (body, when) = match s.split_once('@') {
-        Some((b, w)) => (b, Some(w)),
-        None => (s, None),
+    let (a, rest) = s.split_once('=').ok_or_else(|| format!("poke {s:?}: expected ADDR=VALUE[:WIDTH|:FMT]"))?;
+    let addr = crate::names_bind::address(a).map_err(|e| format!("poke {s:?}: {e}"))?;
+    let (val, ty) = match rest.rsplit_once(':') {
+        Some((v, t)) => (v, t),
+        None => (rest, "4"),
     };
-    let (a, rest) = body.split_once('=').ok_or_else(|| format!("--poke {s:?}: expected ADDR=VALUE[:WIDTH][@FRAME]"))?;
-    let (at, val) = {
-        let addr = crate::names_bind::address(a).map_err(|e| format!("--poke {s:?}: {e}"))?;
-        let (val, ty) = match rest.rsplit_once(':') {
-            Some((v, t)) => (v, t),
-            None => (rest, "4"),
-        };
-        let fmt = match ty.trim() {
-            "1" => Fmt::Unsigned(1),
-            "2" => Fmt::Unsigned(2),
-            "4" => Fmt::Unsigned(4),
-            t => Fmt::parse(t)
-                .ok_or_else(|| format!("--poke {s:?}: width {t:?} is not 1, 2, 4 or a format like i16/fx16.16"))?,
-        };
-        let mem = locate(addr, fmt.width())
-            .ok_or_else(|| format!("--poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
-        (Sample { addr, fmt, name: a.trim().to_string(), mem }, val)
+    let fmt = match ty.trim() {
+        "1" => Fmt::Unsigned(1),
+        "2" => Fmt::Unsigned(2),
+        "4" => Fmt::Unsigned(4),
+        t => Fmt::parse(t)
+            .ok_or_else(|| format!("poke {s:?}: width {t:?} is not 1, 2, 4 or a format like i16/fx16.16"))?,
     };
+    let mem =
+        locate(addr, fmt.width()).ok_or_else(|| format!("poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
+    let at = Sample { addr, fmt, name: a.trim().to_string(), mem };
     let value = at.fmt.given(val).ok_or_else(|| match at.fmt {
         Fmt::Str(n) => format!(
-            "--poke {s:?}: bad value {val:?} (a byte string of at most {n} bytes: printable ASCII, \\xNN for any byte)"
+            "poke {s:?}: bad value {val:?} (a byte string of at most {n} bytes: printable ASCII, \\xNN for any byte)"
         ),
-        _ => {
-            format!("--poke {s:?}: bad value {val:?} (decimal, -decimal, 0xHEX, or a decimal fraction for fx formats)")
-        }
+        _ => format!("poke {s:?}: bad value {val:?} (decimal, -decimal, 0xHEX, or a decimal fraction for fx formats)"),
     })?;
-    let frame = |t: &str| t.trim().parse::<u64>().map_err(|_| format!("--poke {s:?}: bad frame {t:?}"));
-    let (from, to) = match when {
-        None => (0, Some(0)),
-        Some(w) => match w.split_once("..") {
-            Some((a, "")) => (frame(a)?, None),
-            Some((a, b)) => (frame(a)?, Some(frame(b)?)),
-            None => {
-                let f = frame(w)?;
-                (f, Some(f))
-            }
-        },
-    };
-    if to.is_some_and(|t| t < from) {
-        return Err(format!("--poke {s:?}: empty frame range"));
-    }
-    Ok(Poke { spec: s.to_string(), at, value, from, to, applied: Vec::new() })
+    Ok(Poke { at, value })
 }
 
 // ---------------------------------------------------------------- snapshots
@@ -1368,12 +1328,12 @@ mod tests {
         assert!(parse_sample("8015E8A8:f32").is_err());
         assert_eq!(parse_sample("8015E8A8:4").unwrap().fmt, Fmt::Unsigned(4), "watch widths read unsigned");
         assert_eq!(parse_sample("8015E8A8:2").unwrap().name, "0x8015E8A8:u16");
-        let p = parse_poke("0x8015E926=1:1@10").unwrap();
-        assert_eq!((p.width(), p.value, p.from, p.to), (1, Val::Num(1), 10, Some(10)));
-        let p = parse_poke("8015E8AC=300.5:fx16.16@3..").unwrap();
-        assert_eq!((p.width(), p.value, p.from, p.to), (4, Val::Num(0x012C_8000), 3, None));
+        let p = parse_poke("0x8015E926=1:1").unwrap();
+        assert_eq!((p.width(), p.value), (1, Val::Num(1)));
+        let p = parse_poke("8015E8AC=300.5:fx16.16").unwrap();
+        assert_eq!((p.width(), p.value), (4, Val::Num(0x012C_8000)));
         let p = parse_poke("8015E8AC=-2:2").unwrap();
-        assert_eq!((p.width(), p.value, p.from, p.to), (2, Val::Num(0xFFFE), 0, Some(0)));
+        assert_eq!((p.width(), p.value), (2, Val::Num(0xFFFE)));
     }
 
     #[test]
@@ -1399,9 +1359,9 @@ mod tests {
         let mut ram = vec![0u8; RAM_SIZE];
         let mut scratch = vec![0u8; SCRATCH_SIZE];
         ram[0x10010..0x10019].copy_from_slice(b"old name!");
-        let mut p = parse_poke(r"80010010=car\x00\x12:str8@2").unwrap();
-        assert_eq!((p.width(), p.from, p.to), (8, 2, Some(2)));
-        p.apply(2, &mut ram, &mut scratch);
+        let p = parse_poke(r"80010010=car\x00\x12:str8").unwrap();
+        assert_eq!(p.width(), 8);
+        p.apply(&mut ram, &mut scratch);
         assert_eq!(&ram[0x10010..0x10019], b"car\0\x12\0\0\0!", "every byte of the width, and no more");
         assert_eq!(p.report()["value"], json!(r"car\x00\x12"));
         let col = parse_sample("80010010:str8:name").unwrap();
@@ -1412,7 +1372,6 @@ mod tests {
         s.field(0, &m, true);
         assert_eq!(s.out, "run_frame,frame,name\n0,0,car\\x00\\x12\n");
         assert!(parse_poke("80010010=a name too long:str8").unwrap_err().contains("at most 8 bytes"));
-        assert!(parse_poke("8015E8AC=1@5..2").is_err());
         assert!(parse_poke("1F000000=1").is_err());
         assert!(parse_poke("lara.x=1").unwrap_err().contains("neither a hex address nor a name"));
     }

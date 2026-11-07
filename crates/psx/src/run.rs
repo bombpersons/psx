@@ -125,38 +125,8 @@ pub struct RunCmdArgs {
     #[command(flatten)]
     #[serde(flatten)]
     pub observe: ObserveArgs,
-    /// psx development: boot the native core from power-on and report how far it got and
-    /// what hardware it is missing (final PC, CD history, SPU state, unhandled I/O, hot PCs,
-    /// speed) instead of a capture. Uses media (a disc), bios, frames, input/replay, pad,
-    /// timeout, out, audio, snapshot_every and one --watch address. Not for game investigation.
-    #[arg(long)]
-    #[serde(default)]
-    pub diagnose: bool,
-    /// With --diagnose: stop when the PC reaches this hex address and report the last --tail
-    /// instructions, the registers and recent DMA.
-    #[arg(long = "break", requires = "diagnose")]
-    #[serde(default, rename = "break")]
-    pub brk: Option<String>,
-    /// With --diagnose --break: instructions of history kept (default 48).
-    #[arg(long, requires = "diagnose")]
-    #[serde(default)]
-    pub tail: Option<usize>,
-    /// With --diagnose: instruction budget.
-    #[arg(long, requires = "diagnose")]
-    #[serde(default)]
-    pub max_steps: Option<u64>,
-    /// With --diagnose and one --watch address: record its changes (the first 32) from this
-    /// frame on, with the instruction that made each.
-    #[arg(long, requires = "diagnose")]
-    #[serde(default)]
-    pub watch_after: Option<u64>,
-    /// Print a short summary (status, frames, files, samples, pokes); the full
-    /// report is always written to <run_dir>/report.json.
-    #[arg(long)]
-    #[serde(default)]
-    pub brief: bool,
     /// Print only status, frames, the report/screen paths and counts for the requested
-    /// observations, without artifact descriptors. Overrides --brief.
+    /// observations, without artifact descriptors.
     #[arg(long)]
     #[serde(default)]
     pub summary: bool,
@@ -193,11 +163,6 @@ impl RunCmdArgs {
         }
         needs(self.description.is_some(), "description", "save_as", self.save_as.is_some())?;
         needs(self.replace, "replace", "save_as", self.save_as.is_some())?;
-        needs(self.brk.is_some(), "break", "diagnose", self.diagnose)?;
-        needs(self.tail.is_some(), "tail", "diagnose", self.diagnose)?;
-        needs(self.max_steps.is_some(), "max_steps", "diagnose", self.diagnose)?;
-        needs(self.watch_after.is_some(), "watch_after", "diagnose", self.diagnose)?;
-        needs(self.trace.gpu_draw_filter.is_some(), "gpu_draw_filter", "gpu_next_draw", self.trace.gpu_next_draw)?;
         if self.recording.is_some() {
             let given = [
                 ("media", self.media.is_some()),
@@ -208,7 +173,6 @@ impl RunCmdArgs {
                 ("fix_build", self.observe.fix_build.is_some()),
                 ("memcard1, memcard2 and pad", self.cards.given()),
                 ("save_as", self.save_as.is_some()),
-                ("diagnose", self.diagnose),
             ];
             if let Some((name, _)) = given.iter().find(|(_, g)| *g) {
                 return Err(Error::invalid(format!(
@@ -294,10 +258,7 @@ impl RunCmdArgs {
             return Err(e);
         }
         let bios = resolved.bios.unwrap();
-        if a.diagnose {
-            return diagnose(ctx, a, &bios, resolved.media.as_deref());
-        }
-        let (short, summarise) = (a.brief, a.summary);
+        let summarise = a.summary;
         let loads = a.trace_cd.then(|| (resolved.media.clone(), a.symbols.clone()));
         let args = a.into_run_args(resolved.media, bios, recording);
         let (mut complete, mut value) = run(&ctx.root, args)?;
@@ -346,8 +307,6 @@ impl RunCmdArgs {
         }
         if summarise {
             value = summary(&value);
-        } else if short {
-            value = brief(&value);
         }
         Ok((complete, value))
     }
@@ -434,20 +393,9 @@ pub struct ObserveArgs {
     #[arg(long, value_enum)]
     #[serde(default)]
     pub sample_per: Option<crate::ram::SamplePer>,
-    /// Write memory at the start of a run frame: `ADDR=VALUE[:WIDTH|:FMT][@FRAME|@A..B|@A..]`
-    /// (VALUE decimal, 0xHEX or a fraction for fx; WIDTH 1/2/4, default 4;
-    /// default frame 0; a range re-applies it every frame).
-    /// Reported under `pokes`; repeatable.
-    #[arg(long = "poke")]
-    #[serde(default, rename = "poke")]
-    pub pokes: Vec<String>,
     /// Save the screen every N frames as screens/fNNNNNN.png (run frames).
     #[arg(long)]
     pub snapshot_every: Option<u64>,
-    /// Also save a state at the start of these run frames (state_fNNNNNN.bin); repeatable.
-    #[arg(long = "save-state-at")]
-    #[serde(default)]
-    pub save_state_at: Vec<u64>,
     /// Leave stores that do not change the watched value (old == new) out of writes.jsonl.
     #[arg(long)]
     #[serde(default)]
@@ -560,16 +508,7 @@ impl CardArgs {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum GpuDrawFilter {
-    #[default]
-    Any,
-    Primitives,
-    Textured,
-}
-
-/// Instruction tracing and GPU capture.
+/// Instruction tracing.
 #[derive(clap::Args, Clone, Debug, Default, serde::Deserialize, schemars::JsonSchema)]
 pub struct TraceArgs {
     /// Trace instructions: trace.txt (capped by --max-events; its `frame` column is
@@ -581,9 +520,6 @@ pub struct TraceArgs {
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub trace_from_frame: u64,
-    /// Start tracing at the first execution of ADDR (hex, or a name from names/ or --symbols).
-    #[arg(long)]
-    pub trace_start: Option<String>,
     /// Stop tracing after N frames.
     #[arg(long)]
     pub trace_frames: Option<u64>,
@@ -591,24 +527,6 @@ pub struct TraceArgs {
     #[arg(long = "trace-range")]
     #[serde(default, rename = "trace_range")]
     pub trace_ranges: Vec<String>,
-    /// Capture every GPU command of run frame N. Writes gpu_frame.json (decoded
-    /// primitives, texture pages, CLUTs), gpu_frame_vram.bin (VRAM at the end of that
-    /// frame, which `psx assets textures` decodes), gpu_frame_screen.png (its drawing area) and
-    /// VRAM before/after/wireframe PNGs.
-    #[arg(long)]
-    pub gpu_frame: Option<u64>,
-    /// Capture the first completed frame with GP0 drawing commands, starting at
-    /// --gpu-frame (default 0). Never extends --frames.
-    #[arg(long)]
-    #[serde(default)]
-    pub gpu_next_draw: bool,
-    /// Search at most N frames for --gpu-next-draw (default 60, range 1..=600).
-    #[arg(long)]
-    pub gpu_search_frames: Option<u32>,
-    /// Required drawing content for --gpu-next-draw: any (includes fills), primitives
-    /// (excludes fill-only frames), or textured (textured polygons/rectangles).
-    #[arg(long, value_enum, requires = "gpu_next_draw")]
-    pub gpu_draw_filter: Option<GpuDrawFilter>,
 }
 
 pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::ColorType) -> std::io::Result<()> {
@@ -622,20 +540,6 @@ pub(crate) fn write_png(path: &Path, w: u32, h: u32, rgb: &[u8], color: png::Col
 pub fn run(root: &Path, a: RunArgs) -> crate::Result<(bool, Value)> {
     let events =
         crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), a.frames as u64).map_err(Error::invalid)?;
-    if a.trace.gpu_draw_filter.is_some() && !a.trace.gpu_next_draw {
-        return Err(Error::invalid("--gpu-draw-filter requires --gpu-next-draw"));
-    }
-    if a.trace.gpu_search_frames.is_some() && !a.trace.gpu_next_draw {
-        return Err(Error::invalid("--gpu-search-frames requires --gpu-next-draw"));
-    }
-    if a.trace.gpu_search_frames.is_some_and(|n| !(1..=600).contains(&n)) {
-        return Err(Error::invalid("--gpu-search-frames must be in 1..=600"));
-    }
-    if a.trace.gpu_next_draw
-        && a.trace.gpu_frame.unwrap_or(0).checked_add(a.trace.gpu_search_frames.unwrap_or(60) as u64).is_none()
-    {
-        return Err(Error::invalid("GPU search frame range overflows u64"));
-    }
     let input_report = crate::replay::report(&events);
     let from_recording = a.recording.is_some();
     let (complete, mut value) = crate::run_native::run(root, a, events)?;
@@ -646,58 +550,6 @@ pub fn run(root: &Path, a: RunArgs) -> crate::Result<(bool, Value)> {
     value["input"] = input_report;
     value["input"]["application"] = application;
     Ok((complete, value))
-}
-
-/// The `--brief` view of a run report.
-/// `--diagnose`: native's report from power-on, in a run directory.
-fn diagnose(ctx: &Ctx, a: RunCmdArgs, bios: &Path, media: Option<&Path>) -> crate::Result<(bool, Value)> {
-    if a.from_state.is_some() {
-        return Err(Error::invalid("diagnose boots from power-on: leave out from_state"));
-    }
-    if let Some(m) = media {
-        psx_media::disc::Disc::open(m)
-            .map_err(|e| Error::invalid(format!("diagnose boots a disc or the BIOS: {e}")))?;
-    }
-    let hex = crate::commands::addr_arg;
-    let watch = match a.watches.as_slice() {
-        [] => None,
-        [w] => Some(hex(crate::commands::split_width(w).0, "watch")?),
-        _ => return Err(Error::invalid("diagnose watches one address")),
-    };
-    let brk = a.brk.as_deref().map(|b| hex(b, "break")).transpose()?;
-    let frames = a.frames.unwrap_or_else(d_frames);
-    let events =
-        crate::replay::resolve(a.replay.as_deref(), a.input.as_ref(), frames as u64).map_err(Error::invalid)?;
-    let dir = a
-        .out
-        .map(|o| ctx.root.join(o))
-        .unwrap_or_else(|| ctx.root.join(".psx/runs").join(format!("{}-diagnose", crate::stamp())));
-    std::fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
-    let dump = dir.join("diagnose");
-    let wav = a.audio.then(|| dir.join("audio.wav"));
-    let (ok, mut v) = crate::native::run(crate::native::Options {
-        bios,
-        disc: media,
-        frames: frames as u64,
-        max_steps: a.max_steps.unwrap_or_else(crate::native::d_max_steps),
-        dump: Some(&dump),
-        brk,
-        tail: a.tail.unwrap_or_else(crate::native::d_tail),
-        watch,
-        watch_after: a.watch_after.unwrap_or(0),
-        events,
-        snapshot_every: a.observe.snapshot_every,
-        wav: wav.as_deref(),
-        pad: a.cards.pad.as_deref().unwrap_or("digital"),
-        deadline: Some(crate::deadline_in(a.timeout)),
-    })?;
-    v["run_dir"] = json!(dir);
-    v["screen"] = v["dump"]["screen"].clone();
-    v["build"] = crate::context::build();
-    let report = dir.join("report.json");
-    v["report"] = json!(report);
-    let _ = std::fs::write(&report, serde_json::to_vec_pretty(&v).unwrap_or_default());
-    Ok((ok, v))
 }
 
 /// `--trace-cd`'s loads: each CD transfer as disc file and offset to RAM,
@@ -718,84 +570,6 @@ fn decode_loads(dir: &Path, media: Option<&Path>, symbols: &[PathBuf]) -> Value 
     }
     json!({"file": file, "method": v["method"], "transfers": v["transfers"], "evidence": v["evidence"],
         "runs": v["runs"].as_array().map_or(0, Vec::len), "disc_files": v["files"].as_array().map_or(0, Vec::len)})
-}
-
-pub(crate) fn brief(v: &Value) -> Value {
-    let mut frames = v["frames"].clone();
-    if let Some(f) = frames.as_object_mut() {
-        f.remove("numbering");
-    }
-    let mut b = json!({
-        "status": v["status"], "run_dir": v["run_dir"], "termination": v["termination"], "frames": frames,
-        "report": v["report"],
-        "files": v["files"].as_object().map(|f| f.keys().cloned().collect::<Vec<_>>()),
-        "watch": {"enabled":v["watch"]["enabled"],"hits": v["watch"]["hits"], "recorded": v["watch"]["recorded"],
-            "complete":v["watch"]["complete"],"file":v["watch"]["file"]},
-    });
-    for k in [
-        "build",
-        "resolved",
-        "input",
-        "pad",
-        "artifacts",
-        "samples",
-        "tick_finder",
-        "until",
-        "pokes",
-        "screens",
-        "states",
-        "saved_as",
-        "loads",
-        "adjust",
-        "adjust_unavailable",
-        "adjusted",
-        "read_watch",
-        "pad_reads",
-        "spu",
-        "audio",
-        "profile",
-        "wall_ms",
-    ] {
-        if !v[k].is_null() {
-            b[k] = v[k].clone();
-        }
-    }
-    if v["warnings"].as_array().is_some_and(|w| !w.is_empty()) {
-        b["warnings"] = v["warnings"].clone();
-    }
-    if let Some(events) = v["input"]["events"].as_array() {
-        b["input"]["events"] = json!(events.iter().take(8).collect::<Vec<_>>());
-        b["input"]["page"] = crate::page::metadata(events.len(), 0, events.len().min(8), 8);
-    }
-    if v["gpu_frame"].is_object() {
-        let g = &v["gpu_frame"];
-        let mut summary = serde_json::Map::new();
-        for key in [
-            "error",
-            "status",
-            "reason",
-            "mode",
-            "search",
-            "frame",
-            "run_frame",
-            "absolute_frame",
-            "complete",
-            "commands",
-            "draw_commands",
-            "draw_filter",
-            "content",
-        ] {
-            if let Some(value) = g.get(key) {
-                summary.insert(key.into(), value.clone());
-            }
-        }
-        b["gpu_frame"] = Value::Object(summary);
-    }
-    if v["trace"].is_object() {
-        let t = &v["trace"];
-        b["trace"] = trace_counts(t);
-    }
-    b
 }
 
 /// trace.txt's lines are capped (max_events); code.bin, executed.bin and
@@ -828,7 +602,7 @@ pub(crate) fn summary(v: &Value) -> Value {
     if v["trace"].is_object() {
         s["trace"] = trace_counts(&v["trace"]);
     }
-    let sections: [(&str, &[&str]); 11] = [
+    let sections: [(&str, &[&str]); 9] = [
         ("until", &["met", "run_frame", "values"]),
         ("pad_reads", &["buffer", "handler_copies", "polls", "fields", "fields_without_read"]),
         ("tick_finder", &["file", "fields", "pairs"]),
@@ -837,9 +611,7 @@ pub(crate) fn summary(v: &Value) -> Value {
         ("samples", &["file", "rows"]),
         ("spu", &["file", "events", "recorded", "complete"]),
         ("audio", &["file", "seconds", "peak"]),
-        ("gpu_frame", &["status", "reason", "frame", "run_frame", "draw_commands"]),
         ("screens", &["dir", "count"]),
-        ("states", &[]),
     ];
     for (key, keys) in sections {
         if !v[key].is_null() {
@@ -858,9 +630,6 @@ pub(crate) fn summary(v: &Value) -> Value {
     if !passed.is_null() {
         s["latch_passed_through"] = pick(passed, &["fields", "range_count"]);
     }
-    if let Some(pokes) = v["pokes"].as_array() {
-        s["pokes"] = json!(pokes.len());
-    }
     if v["input"]["application"]["scheduled_events"].as_u64().is_some_and(|n| n > 0) {
         s["input"] = pick(&v["input"]["application"], &["scheduled_events", "applied_events", "pending_events"]);
     }
@@ -874,14 +643,9 @@ mod tests {
     #[test]
     fn json_arguments_are_refused_as_the_command_line_refuses_them() {
         let args = |v: Value| serde_json::from_value::<RunCmdArgs>(v).unwrap();
-        // Over MCP, watch_after without diagnose was once ignored without a word.
-        let e = args(json!({"frames": 10, "watch_after": 118})).check().unwrap_err();
-        assert!(e.to_string().contains("watch_after needs diagnose"), "{e}");
         let e = args(json!({"input": [], "replay": "r.json"})).check().unwrap_err();
         assert!(e.to_string().contains("pass one"), "{e}");
         assert!(args(json!({"replace": true})).check().is_err());
-        assert!(args(json!({"gpu_draw_filter": "textured"})).check().is_err());
-        assert!(args(json!({"frames": 10, "diagnose": true, "watch_after": 5})).check().is_ok());
         assert!(args(json!({"save_as": "x", "description": "d", "replace": true})).check().is_ok());
         // A recording gives the start, the pad and the adjustments.
         let e = args(json!({"recording": "s/r", "adjust": ["latch"]})).check().unwrap_err();

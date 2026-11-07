@@ -23,7 +23,7 @@ use std::path::PathBuf;
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct TexturesArgs {
-    /// A native run directory (vram.bin, and gpu_frame.json unless --page).
+    /// A run directory or a debugger stop's (vram.bin, and gpu_frame.json unless --page).
     pub run_dir: PathBuf,
     /// One page as X,Y,DEPTH (VRAM halfword x, line y, 4/8/15 bpp).
     #[arg(long)]

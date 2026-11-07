@@ -14,8 +14,8 @@ use crate::commands::addr_value;
 use crate::run::{RunArgs, write_png};
 use psx_media::memmap::{hex, region};
 
-mod gpu_capture;
-mod observe;
+pub(crate) mod gpu_capture;
+pub(crate) mod observe;
 use gpu_capture::{CapturedFrame, GpuCapture};
 
 use crate::session::{Out, Session};
@@ -271,8 +271,6 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         quantities.as_ref().filter(|_| per == crate::ram::SamplePer::Tick).map(|q| q.binding.described().tick.clone());
     let sampler =
         (!cols.is_empty()).then(|| crate::ram::Sampler::new(cols, obs.sample_every.unwrap_or(1), per, quantities));
-    let pokes = obs.pokes.iter().map(|s| crate::ram::parse_poke(s)).collect::<Result<Vec<_>, _>>();
-    let pokes = pokes.map_err(Error::invalid)?;
     let read_ranges = obs.watch_reads.iter().map(|s| crate::run::parse_range_spec(s)).collect::<Result<Vec<_>, _>>();
     let read_ranges = read_ranges.map_err(|e| Error::invalid(format!("--watch-reads: {e}")))?;
     if obs.snapshot_every == Some(0) || obs.sample_every == Some(0) {
@@ -292,10 +290,9 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     }
     let audio = if a.audio { Some(observe::Audio::new(m, dir.join("audio.wav"))?) } else { None };
     let profile = a.profile.then(|| observe::Profile::new(m, scopes.clone()));
-    let tracer = if a.trace.trace { Some(make_tracer(&a, &scopes, m.bus.frames, &dir)?) } else { None };
+    let tracer = if a.trace.trace { Some(tracer(&a.trace, a.max_events, &scopes, m.bus.frames, &dir)?) } else { None };
     let trace = tracer.map(|t| observe::Trace::new(m, t, scopes.clone()));
 
-    let gpu = GpuCapture::new(&a.trace, a.frames).map(|capture| observe::Gpu { capture, start: start_frame });
     let Some(target) = start_frame.checked_add(a.frames as u64) else {
         return Err(Error::invalid("run frame range overflows u64"));
     };
@@ -306,9 +303,6 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         s.observe(observe::Until { conds: until, met: None });
     }
     if let Some(o) = audio {
-        s.observe(o);
-    }
-    if let Some(o) = gpu {
         s.observe(o);
     }
     if let Some(o) = census {
@@ -339,17 +333,6 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     }
     if let Some(every) = obs.snapshot_every {
         s.observe(observe::Screens { every, dir: dir.clone(), shots: Vec::new() });
-    }
-    if !obs.save_state_at.is_empty() {
-        s.observe(observe::StatesAt {
-            at: obs.save_state_at.clone(),
-            dir: dir.clone(),
-            media: media_id.clone(),
-            states: Vec::new(),
-        });
-    }
-    if !pokes.is_empty() {
-        s.observe(observe::Pokes(pokes));
     }
     s.observe(observe::Writes {
         enabled: !a.watches.is_empty(),
@@ -412,7 +395,7 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         "termination": termination,
         "warnings": crate::stall::warnings(m),
         "frames": {"requested": a.frames, "reached": m.bus.frames - start_frame, "unit": "vsync", "start": start_frame, "end": m.bus.frames,
-            "numbering": "run frames (--frames, --replay, --poke, --gpu-frame, --trace-from-frame, samples run_frame) count from the run start; `frame` in writes.jsonl, trace.txt, samples.csv and the other logs is absolute (vblanks since power-on) = run_frame + start"},
+            "numbering": "run frames (--frames, --replay, --trace-from-frame, samples run_frame) count from the run start; `frame` in writes.jsonl, trace.txt, samples.csv and the other logs is absolute (vblanks since power-on) = run_frame + start"},
         "cpu_cycles": m.bus.now,
         "instructions": s.steps,
         "registers": registers,
@@ -602,13 +585,14 @@ pub(crate) fn resolve(spec: &str, scopes: &[crate::ScopedSymbols]) -> crate::Res
         .map_err(|e| Error::invalid(format!("{e} (nor a function in --symbols)")))
 }
 
-fn make_tracer(
-    a: &RunArgs,
+/// A tracer for `t`'s window, writing trace.txt into `dir`.
+pub(crate) fn tracer(
+    t: &crate::run::TraceArgs,
+    max_events: u32,
     scopes: &std::rc::Rc<Vec<crate::ScopedSymbols>>,
     start_frame: u64,
     dir: &Path,
 ) -> crate::Result<Tracer> {
-    let t = &a.trace;
     let mut ranges = Vec::new();
     for r in &t.trace_ranges {
         let (lo, hi) = match r.split_once('-') {
@@ -623,13 +607,12 @@ fn make_tracer(
         }
         ranges.push((lo & 0x1FFF_FFFF, (lo & 0x1FFF_FFFF) + (hi - lo)));
     }
-    let start_pc = t.trace_start.as_deref().map(|s| resolve(s, scopes).map(|r| r.0)).transpose()?;
     let cfg = TraceConfig {
         from_frame: start_frame + t.trace_from_frame,
-        start_pc,
+        start_pc: None,
         frames: t.trace_frames,
         ranges,
-        max_lines: a.max_events as u64,
+        max_lines: max_events as u64,
     };
     let path = dir.join("trace.txt");
     let mut file = std::fs::File::create(&path).map_err(|e| Error::io(&path, e))?;
@@ -808,7 +791,6 @@ fn trace_outputs(
     // The window as run's arguments give it, for a recipe to run again.
     let options = json!({
         "trace_from_frame": t.cfg.from_frame.saturating_sub(start_frame),
-        "trace_start": t.cfg.start_pc.map(hex),
         "trace_frames": t.cfg.frames,
         "trace_range": t.cfg.ranges.iter().map(|(lo, hi)| format!("{}-{}", hex(*lo), hex(*hi))).collect::<Vec<_>>(),
         "max_events": t.cfg.max_lines,

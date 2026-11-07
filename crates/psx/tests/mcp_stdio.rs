@@ -457,13 +457,13 @@ fn scoped_projects_keep_paths_defaults_continuations_and_screens_isolated() {
     assert_eq!(default["project_root"], json!(server));
     let (run, error, blocks) = rpc.tool(
         "run",
-        json!({"project_root":"../a","frames":1,"out":"capture","save_state":true,"brief":true,"return_screen":true}),
+        json!({"project_root":"../a","frames":1,"out":"capture","save_state":true,"summary":true,"return_screen":true}),
     );
     assert!(!error, "{run}");
     assert!(root.join("a/capture/state.bin").exists());
     assert!(!root.join("b/capture").exists() && !server.join("capture").exists());
     assert!(blocks.iter().any(|b| b["type"] == "image"), "scoped screenshot must be read relative to its project");
-    let next = &run["artifacts"][0]["read"];
+    let next = &run["next_call"];
     assert_eq!(next["arguments"]["project_root"], json!(root.join("a")));
     let mut arguments = next["arguments"].clone();
     arguments["limit"] = json!(2);
@@ -1053,14 +1053,14 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
     let bios: Vec<u8> = code.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
     std::fs::write(root.join("bios.bin"), &bios).unwrap();
     std::fs::write(root.join("start.bin"), psx_core::Machine::new(bios).save_state(None)).unwrap();
-    let common = ["run", "--bios", "bios.bin", "--from-state", "start.bin", "--frames", "2", "--trace-spu", "--brief"];
+    let common = ["run", "--bios", "bios.bin", "--from-state", "start.bin", "--frames", "2", "--trace-spu"];
     let (cli_report, ok) = cli(&root, &[common.as_slice(), &["--out", "cli"]].concat());
     assert!(ok, "{cli_report}");
     let mut rpc = Rpc::start(&root);
     let (mcp_report, error, _) = rpc.tool(
         "run",
         json!({"bios":"bios.bin","from_state":"start.bin",
-        "frames":2,"trace_spu":true,"brief":true,"out":"mcp"}),
+        "frames":2,"trace_spu":true,"out":"mcp"}),
     );
     assert!(!error, "{mcp_report}");
     let strip = |mut v: Value| {
@@ -1103,11 +1103,11 @@ fn spu_trace_links_key_ons_to_sample_hashes_and_uploads_through_cli_and_mcp() {
 }
 
 #[test]
-fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
-    let root = std::env::temp_dir().join(format!("psx-next-draw-{}", std::process::id()));
+fn the_debugger_stops_at_a_draw_and_captures_it() {
+    let root = std::env::temp_dir().join(format!("psx-debug-draw-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     // Authored BIOS: poll RAM[0], then fill 16x1 pixels with that RGB colour.
-    // Pokes choose the drawing frames without copyrighted firmware or media.
+    // Pokes choose the drawing fields without copyrighted firmware or media.
     let code: [u32; 16] = [
         0x3c09_1f80,
         0x3529_1810, // t1 = GP0
@@ -1132,105 +1132,39 @@ fn next_draw_captures_the_same_frame_through_cli_and_mcp() {
     m.bus.frames = 37;
     std::fs::write(root.join("start.bin"), m.save_state(None)).unwrap();
     let mut rpc = Rpc::start(&root);
-    let common = [
-        "run",
-        "--bios",
-        "bios.bin",
-        "--from-state",
-        "start.bin",
-        "--frames",
-        "4",
-        "--poke",
-        "0=255:4@2",
-        "--poke",
-        "0=65280:4@3",
-        "--brief",
-    ];
-    let mut args = common.to_vec();
-    // Read watches select the per-instruction loop; MCP below uses frame batching.
-    args.extend([
-        "--gpu-next-draw",
-        "--gpu-search-frames",
-        "3",
-        "--watch-reads",
-        "0:4",
-        "--max-events",
-        "0",
-        "--out",
-        "cli",
-    ]);
-    let (cli_report, ok) = cli(&root, &args);
-    assert!(ok, "{cli_report}");
-    let base = json!({"bios":"bios.bin", "from_state":"start.bin", "frames":4,
-        "poke":["0=255:4@2", "0=65280:4@3"], "brief":true, "gpu_next_draw":true, "gpu_search_frames":3, "out":"mcp"});
-    let (mcp_report, error, _) = rpc.tool("run", base.clone());
-    assert!(!error, "{mcp_report}");
-    assert_eq!(cli_report["gpu_frame"], mcp_report["gpu_frame"]);
-    let capture = &mcp_report["gpu_frame"];
-    assert_eq!(capture["frame"], 2);
-    assert_eq!(capture["run_frame"], 2);
-    assert_eq!(capture["absolute_frame"], 39);
-    assert_eq!(capture["complete"], true);
-    assert_eq!(capture["draw_commands"], 1);
-    assert_eq!(capture["search"]["frames_inspected"], 3);
-    assert_eq!(capture["search"]["effective_max_frames"], 3);
-    assert_eq!(capture["search"]["truncated_by_run_budget"], false);
-    assert_eq!(mcp_report["frames"]["reached"], 4);
-    for name in
-        ["gpu_frame.json", "gpu_frame_vram.bin", "gpu_frame_before.png", "gpu_frame_after.png", "gpu_frame_screen.png"]
-    {
-        assert_eq!(
-            std::fs::read(root.join("cli").join(name)).unwrap(),
-            std::fs::read(root.join("mcp").join(name)).unwrap(),
-            "{name}"
-        );
+    let (start, error, _) = rpc.tool("debug_start", json!({"bios":"bios.bin","from_state":"start.bin"}));
+    assert!(!error, "{start}");
+    // Nothing draws: the go ends at its limit with the capture not found.
+    let (miss, error, _) = rpc.tool("debug_go", json!({"draw":"any","limit":2}));
+    assert!(!error, "{miss}");
+    assert_eq!(miss["why"], "limit", "{miss}");
+    assert_eq!(miss["detail"]["gpu"]["status"], "not_found", "{miss}");
+    let (_, error, _) = rpc.tool("debug_set", json!({"poke":["0=255:4"]}));
+    assert!(!error);
+    let (hit, error, _) = rpc.tool("debug_go", json!({"draw":"any","limit":3}));
+    assert!(!error, "{hit}");
+    assert_eq!(hit["why"], "draw", "{hit}");
+    assert_eq!(hit["detail"]["gpu"]["absolute_frame"], 39, "{hit}");
+    assert_eq!(hit["detail"]["gpu"]["complete"], true);
+    assert_eq!(hit["detail"]["gpu"]["draw_commands"], 1);
+    let dir = std::path::PathBuf::from(hit["detail"]["dir"].as_str().unwrap());
+    for name in ["gpu_frame.json", "gpu_frame_vram.bin", "gpu_frame_before.png", "gpu_frame_after.png"] {
+        assert!(dir.join(name).exists(), "{name}");
     }
-    let selected = std::fs::read(root.join("mcp/gpu_frame_vram.bin")).unwrap();
-    let final_vram = std::fs::read(root.join("mcp/vram.bin")).unwrap();
-    assert_eq!(&selected[..2], &31u16.to_le_bytes()); // red, selected frame
-    assert_eq!(&final_vram[..2], &992u16.to_le_bytes()); // green, later frame
-    let full: Value = serde_json::from_slice(&std::fs::read(root.join("mcp/report.json")).unwrap()).unwrap();
-    let decoded: Value = serde_json::from_slice(&std::fs::read(root.join("mcp/gpu_frame.json")).unwrap()).unwrap();
-    assert_eq!(full["gpu_frame"], decoded["summary"]);
-
-    // Search exhaustion is explicit; the bounded run still completes normally.
-    let mut miss = base.clone();
-    miss["gpu_search_frames"] = json!(2);
-    miss["out"] = json!("miss");
-    let (report, error, _) = rpc.tool("run", miss);
-    assert!(!error, "{report}");
-    assert_eq!(report["status"], "complete");
-    assert_eq!(report["gpu_frame"]["status"], "not_found");
-    assert_eq!(report["gpu_frame"]["reason"], "search_limit");
-    assert_eq!(report["gpu_frame"]["search"]["frames_inspected"], 2);
-    assert!(!root.join("miss/gpu_frame.json").exists());
-
-    // The default search window cannot extend a one-field run.
-    let mut short = base.clone();
-    short["frames"] = json!(1);
-    short["poke"] = json!([]);
-    short.as_object_mut().unwrap().remove("gpu_search_frames");
-    short["out"] = json!("short");
-    let (report, error, _) = rpc.tool("run", short);
-    assert!(!error, "{report}");
-    assert_eq!(report["gpu_frame"]["status"], "not_found");
-    assert_eq!(report["gpu_frame"]["reason"], "run_end");
-    assert_eq!(report["gpu_frame"]["search"]["max_frames"], 60);
-    assert_eq!(report["gpu_frame"]["search"]["run_budget_frames"], 1);
-    assert_eq!(report["gpu_frame"]["search"]["effective_max_frames"], 1);
-    assert_eq!(report["gpu_frame"]["search"]["truncated_by_run_budget"], true);
-    assert_eq!(report["gpu_frame"]["search"]["frames_inspected"], 1);
-
-    // An explicit start is inclusive and the final completed frame is eligible.
-    let mut last = base;
-    last["gpu_frame"] = json!(3);
-    last["gpu_search_frames"] = json!(1);
-    last["out"] = json!("last");
-    let (report, error, _) = rpc.tool("run", last);
-    assert!(!error, "{report}");
-    assert_eq!(report["gpu_frame"]["run_frame"], 3);
-    assert_eq!(report["gpu_frame"]["absolute_frame"], 40);
-    assert_eq!(report["gpu_frame"]["complete"], true);
+    assert_eq!(&std::fs::read(dir.join("gpu_frame_vram.bin")).unwrap()[..2], &31u16.to_le_bytes(), "red");
+    // A later field draws green; show gpu still gives the latest capture.
+    let (_, error, _) = rpc.tool("debug_set", json!({"poke":["0=65280:4"]}));
+    assert!(!error);
+    let (_, error, _) = rpc.tool("debug_go", json!({"fields":1}));
+    assert!(!error);
+    let (show, error, _) = rpc.tool("debug_show", json!({"gpu":true}));
+    assert!(!error, "{show}");
+    assert_eq!(show["gpu"]["dir"], json!(dir), "{show}");
+    assert_eq!(show["gpu"]["capture"]["draw_commands"], 1, "{show}");
+    let (textures, error, _) = rpc.tool("assets_textures", json!({"run_dir": dir}));
+    assert!(!error, "{textures}");
+    let (_, error, _) = rpc.tool("debug_end", json!({}));
+    assert!(!error);
     drop(rpc);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1324,21 +1258,15 @@ fn mcp_tools_match_cli() {
         "frames",
         "watch",
         "trace",
-        "gpu_frame",
         "memcard1",
         "pad",
         "from_state",
         "return_screen",
         "sample",
         "sample_every",
-        "poke",
         "snapshot_every",
-        "save_state_at",
         "watch_changes_only",
         "watch_reads",
-        "brief",
-        "gpu_next_draw",
-        "gpu_search_frames",
     ] {
         assert!(run["inputSchema"]["properties"].get(field).is_some(), "run schema lacks {field}");
     }
@@ -1376,34 +1304,8 @@ fn mcp_tools_match_cli() {
         ),
         (
             "run",
-            json!({"bios": "no-such-bios.bin", "frames": 1, "diagnose": true}),
-            vec!["run", "--bios", "no-such-bios.bin", "--frames", "1", "--diagnose"],
-        ),
-        (
-            "run",
             json!({"bios": "no-such-bios.bin", "frames": 1}),
             vec!["run", "--bios", "no-such-bios.bin", "--frames", "1"],
-        ),
-        ("run", json!({"bios":"b.bin", "gpu_next_draw":true}), vec!["run", "--bios", "b.bin", "--gpu-next-draw"]),
-        (
-            "run",
-            json!({"bios":"b.bin", "gpu_search_frames":2}),
-            vec!["run", "--bios", "b.bin", "--gpu-search-frames", "2"],
-        ),
-        (
-            "run",
-            json!({"bios":"b.bin", "gpu_next_draw":true, "gpu_search_frames":0}),
-            vec!["run", "--bios", "b.bin", "--gpu-next-draw", "--gpu-search-frames", "0"],
-        ),
-        (
-            "run",
-            json!({"bios":"b.bin", "gpu_next_draw":true, "gpu_search_frames":601}),
-            vec!["run", "--bios", "b.bin", "--gpu-next-draw", "--gpu-search-frames", "601"],
-        ),
-        (
-            "run",
-            json!({"bios":"b.bin", "gpu_next_draw":true, "gpu_frame":u64::MAX}),
-            vec!["run", "--bios", "b.bin", "--gpu-next-draw", "--gpu-frame", "18446744073709551615"],
         ),
         (
             "code_disasm",
@@ -1865,7 +1767,7 @@ fn first_use_bios_setup_context_and_compact_screens_work_through_mcp() {
     for compact in [false, true] {
         let out = if compact { "compact" } else { "expanded" };
         let (run, error, content) =
-            rpc.tool("run", json!({"frames":0,"save_state":true,"brief":compact,"return_screen":true,"out":out}));
+            rpc.tool("run", json!({"frames":0,"save_state":true,"summary":compact,"return_screen":true,"out":out}));
         assert!(!error && run["status"] == "complete", "{run}");
         let block = content.iter().find(|v| v["type"] == "image").expect("screenshot attached in both output modes");
         use base64::Engine;
@@ -2152,18 +2054,20 @@ fn inline_inputs_match_replay_and_release_at_the_final_checkpoint_boundary() {
     let events = json!([{"frame":0,"buttons":["cross"],"until":2}]);
     std::fs::write(root.join("input.json"), events.to_string()).unwrap();
     let mut rpc = Rpc::start(&root);
-    let (run, error, _) = rpc.tool(
-        "run",
-        json!({"bios":"bios.bin","input":events,"frames":2,"save_state":true,"save_state_at":[1],"out":"inline"}),
-    );
+    let (run, error, _) =
+        rpc.tool("run", json!({"bios":"bios.bin","input":events,"frames":2,"save_state":true,"out":"inline"}));
     assert!(!error, "{run}");
     assert_eq!(
         run["input"]["events"],
         json!([{"frame":0,"buttons":["CROSS"],"sticks":[128,128,128,128]},{"frame":2,"buttons":[],"sticks":[128,128,128,128]}])
     );
+    // The state after one field: the press still held.
+    let held = json!([{"frame":0,"buttons":["cross"]}]);
+    let (one, error, _) =
+        rpc.tool("run", json!({"bios":"bios.bin","input":held,"frames":1,"save_state":true,"out":"inline-1"}));
+    assert!(!error, "{one}");
     let (_, middle) =
-        psx_core::Machine::load_state(&std::fs::read(root.join("inline/state_f000001.bin")).unwrap(), bios.clone())
-            .unwrap();
+        psx_core::Machine::load_state(&std::fs::read(root.join("inline-1/state.bin")).unwrap(), bios.clone()).unwrap();
     assert_eq!(middle.bus.sio0.buttons, psx_core::sio0::button::CROSS);
     let (_, last) =
         psx_core::Machine::load_state(&std::fs::read(root.join("inline/state.bin")).unwrap(), bios.clone()).unwrap();
@@ -2210,12 +2114,17 @@ fn inline_inputs_match_replay_and_release_at_the_final_checkpoint_boundary() {
     let (resumed, error, _) = rpc.tool(
         "run",
         json!({"bios":"bios.bin","from_state":"resume.bin","frames":2,
-        "input":events,"save_state":true,"save_state_at":[1],"out":"resumed"}),
+        "input":events,"save_state":true,"out":"resumed"}),
     );
     assert!(!error, "{resumed}");
+    let (one, error, _) = rpc.tool(
+        "run",
+        json!({"bios":"bios.bin","from_state":"resume.bin","frames":1,
+        "input":held,"save_state":true,"out":"resumed-1"}),
+    );
+    assert!(!error, "{one}");
     let (_, held) =
-        psx_core::Machine::load_state(&std::fs::read(root.join("resumed/state_f000001.bin")).unwrap(), bios.clone())
-            .unwrap();
+        psx_core::Machine::load_state(&std::fs::read(root.join("resumed-1/state.bin")).unwrap(), bios.clone()).unwrap();
     assert_eq!(held.bus.sio0.buttons, psx_core::sio0::button::CROSS);
     assert_eq!(resumed["pad"]["buttons"], json!([]));
     let applied: Vec<Value> = std::fs::read_to_string(root.join("resumed/input.jsonl"))

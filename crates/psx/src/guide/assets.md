@@ -62,11 +62,13 @@ own (tools/import on the template).
 
 ## What the game built
 
-run with gpu_frame captures one frame's GPU commands; gpu_next_draw searches
-for a frame that draws (fills count: gpu_draw_filter primitives or textured
-narrows it). assets_textures decodes the captured frame's VRAM through its
-CLUTs into PNGs and a .psxscene for the template's --scene viewer: screen
-drawing, not world geometry. assets_diff compares two vram.bin dumps. These,
+The debugger captures a field's GPU commands (topic debug): debug_go gpu
+the first whole field from its stop, debug_go draw stops at the end of the
+first field that draws and captures it (any counts fills; primitives or
+textured narrows it). debug_show gpu gives the capture and its directory;
+assets_textures with that directory as run_dir decodes the field's VRAM
+through its CLUTs into PNGs and a .psxscene for the template's --scene
+viewer: screen drawing, not world geometry. assets_diff compares two vram.bin dumps. These,
 and RAM after a load, are what an importer's test compares against.
 
 Sounds: trace_spu logs which voice keyed which sample; its sample_sha256

@@ -333,7 +333,7 @@ impl ArgsContext {
             }
         }
         if setup.is_none() {
-            next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"brief":true,"return_screen":true}}));
+            next_calls.push(json!({"tool":"run","arguments":{"media":r.media,"bios":r.bios,"frames":60,"save_state":true,"summary":true,"return_screen":true}}));
         }
         // With a BIOS chosen, the others and the catalogue are only counted.
         let chosen = r.bios.is_some();

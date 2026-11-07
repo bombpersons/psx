@@ -5,10 +5,20 @@ use psx_core::Machine;
 use psx_gpu::{Display, DrawState, vram::Vram};
 use serde_json::{Value, json};
 
-use crate::run::{GpuDrawFilter, TraceArgs};
+/// What a field must draw to stop debug_go draw: any (fills too),
+/// primitives (not fill-only fields) or textured (textured polygons or
+/// rectangles).
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuDrawFilter {
+    #[default]
+    Any,
+    Primitives,
+    Textured,
+}
 
 #[derive(Clone)]
-pub(super) struct Projection {
+pub(crate) struct Projection {
     pub sx: i16,
     pub sy: i16,
     pub view: [i32; 3],
@@ -22,7 +32,7 @@ struct Candidate {
     prior_projections: Vec<Projection>,
 }
 
-pub(super) struct CapturedFrame {
+pub(crate) struct CapturedFrame {
     pub state: DrawState,
     pub before: Vram,
     pub after: Vram,
@@ -34,7 +44,7 @@ pub(super) struct CapturedFrame {
     pub metadata: Value,
 }
 
-pub(super) struct GpuCapture {
+pub(crate) struct GpuCapture {
     from: u64,
     limit: u32,
     run_frames: u32,
@@ -62,18 +72,21 @@ fn draws(command: &[u32]) -> bool {
 }
 
 impl GpuCapture {
-    pub fn new(args: &TraceArgs, run_frames: u32) -> Option<Self> {
-        (args.gpu_frame.is_some() || args.gpu_next_draw).then(|| Self {
-            from: args.gpu_frame.unwrap_or(0),
-            limit: if args.gpu_next_draw { args.gpu_search_frames.unwrap_or(60) } else { 1 },
+    /// Field `from` (counted from the first boundary seen), or with `draw`
+    /// the first complete field from there with that drawing, searching at
+    /// most `limit` fields of the `run_frames` there are.
+    pub fn new(from: u64, draw: Option<GpuDrawFilter>, limit: u32, run_frames: u32) -> Self {
+        Self {
+            from,
+            limit: if draw.is_some() { limit } else { 1 },
             run_frames,
-            next_draw: args.gpu_next_draw,
-            filter: args.gpu_draw_filter.unwrap_or_default(),
+            next_draw: draw.is_some(),
+            filter: draw.unwrap_or_default(),
             inspected: 0,
             active: None,
             previous: Vec::new(),
             selected: None,
-        })
+        }
     }
 
     fn metadata(&self) -> Value {
@@ -206,16 +219,7 @@ mod tests {
     }
 
     fn search(from: u64, limit: u32) -> GpuCapture {
-        GpuCapture::new(
-            &TraceArgs {
-                gpu_frame: Some(from),
-                gpu_next_draw: true,
-                gpu_search_frames: Some(limit),
-                ..Default::default()
-            },
-            (from + u64::from(limit)) as u32,
-        )
-        .unwrap()
+        GpuCapture::new(from, Some(GpuDrawFilter::Any), limit, (from + u64::from(limit)) as u32)
     }
 
     fn advance(c: &mut GpuCapture, m: &mut Machine, start: u64, finish: bool) {
@@ -226,11 +230,7 @@ mod tests {
     #[test]
     fn search_metadata_exposes_the_effective_run_budget() {
         for (from, frames, effective) in [(0, 1, 1), (4, 8, 4), (8, 8, 0), (9, 8, 0), (0, 90, 60)] {
-            let capture = GpuCapture::new(
-                &TraceArgs { gpu_frame: Some(from), gpu_next_draw: true, ..Default::default() },
-                frames,
-            )
-            .unwrap();
+            let capture = GpuCapture::new(from, Some(GpuDrawFilter::Any), 60, frames);
             let metadata = capture.missing("frames_reached");
             assert_eq!(metadata["search"]["max_frames"], 60);
             assert_eq!(metadata["search"]["run_budget_frames"], frames);
@@ -294,7 +294,7 @@ mod tests {
     fn exact_empty_and_partial_captures_remain_available() {
         for complete in [false, true] {
             let mut m = machine();
-            let mut c = GpuCapture::new(&TraceArgs { gpu_frame: Some(0), ..Default::default() }, 1).unwrap();
+            let mut c = GpuCapture::new(0, None, 1, 1);
             c.boundary(&mut m, 0, false);
             m.bus.frames = u64::from(complete);
             c.boundary(&mut m, 0, true);
@@ -310,16 +310,7 @@ mod tests {
     fn draw_filters_skip_fills_and_optionally_untextured_primitives() {
         for (filter, expected) in [(GpuDrawFilter::Primitives, 1), (GpuDrawFilter::Textured, 2)] {
             let mut m = machine();
-            let mut c = GpuCapture::new(
-                &TraceArgs {
-                    gpu_next_draw: true,
-                    gpu_search_frames: Some(3),
-                    gpu_draw_filter: Some(filter),
-                    ..Default::default()
-                },
-                3,
-            )
-            .unwrap();
+            let mut c = GpuCapture::new(0, Some(filter), 3, 3);
             c.boundary(&mut m, 0, false);
             m.bus.gpu.gp0_all(&[0x020000ff, 0, 0x00010010]);
             advance(&mut c, &mut m, 0, false);

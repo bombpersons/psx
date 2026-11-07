@@ -22,12 +22,17 @@ a new stop:
   not seen.
 - until: a field boundary where conditions hold, as run's until.
 - tick: the binding's tick ends (the glossary's binding for this disc).
+- draw: the end of the first whole field that draws (any, primitives or
+  textured), captured as gpu captures it.
 - fields, ticks, instructions: after that many.
 
 limit (fields, default 3600) and timeout (seconds, default 120) end a
 go that found none; its stop says why ("limit", "timeout",
 "recording_ended" when a recording's ticks run out). history=N keeps
-the last N instructions on the way. A stop gives the field (frame
+the last N instructions on the way, trace traces them as run's trace
+does (trace.txt, calls.json, coverage), and gpu captures the GPU commands
+of the first whole field from here (gpu_frame.json, its VRAM and PNGs);
+both go in the stop's directory, stops/N/. A stop gives the field (frame
 absolute, run_frame from the start), the ticks, the PC, its function
 and instruction, and for write and read what was written or read and by
 which instruction.
@@ -37,9 +42,12 @@ which instruction.
 debug_show shows the stop: registers by default; value takes sample's
 formats (`ADDR:FMT[:NAME]`) or glossary quantities and probes by name;
 bytes gives memory as hex; history the instructions go kept; screen a
-PNG; stops every stop and the one the session is at.
+PNG; stops every stop and the one the session is at; gpu the latest GPU
+capture (topic assets); hardware the CD controller's recent commands, the
+SPU, unhandled I/O reads, DMA and interrupts, and the PCs and I/O hottest
+over the next two fields, for psx's own development.
 
-debug_set writes memory (poke, as run's without a frame), a register
+debug_set writes memory (poke `ADDR=VALUE[:WIDTH|:FMT]`), a register
 (pc, hi, lo or a register by name), or holds a pad state from here (not
 in a recording's session, whose ticks set the pad). It makes a new stop.
 

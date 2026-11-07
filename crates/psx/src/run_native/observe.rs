@@ -6,12 +6,11 @@ use std::rc::Rc;
 
 use psx_core::Machine;
 use psx_core::cpu::StepInfo;
-use psx_core::state::MediaId;
 use psx_core::trace::Tracer;
 use psx_media::memmap::{hex, region};
 use serde_json::{Value, json};
 
-use super::{CapturedFrame, GpuCapture, sha256};
+use super::{GpuCapture, sha256};
 use crate::Error;
 use crate::commands::addr_value;
 use crate::run::write_png;
@@ -20,28 +19,15 @@ use crate::session::{Driver, Flow, Observer, Out, Pad};
 type Scopes = Rc<Vec<crate::ScopedSymbols>>;
 
 /// The report sections an observer gives, null when it was not attached.
-pub(super) const SECTIONS: [&str; 13] = [
-    "audio",
-    "gpu_frame",
-    "pad_reads",
-    "pokes",
-    "profile",
-    "read_watch",
-    "samples",
-    "screens",
-    "spu",
-    "states",
-    "tick_finder",
-    "trace",
-    "until",
-];
+pub(super) const SECTIONS: [&str; 10] =
+    ["audio", "pad_reads", "profile", "read_watch", "samples", "screens", "spu", "tick_finder", "trace", "until"];
 
 pub(super) fn jsonl(items: &[Value]) -> String {
     items.iter().map(|v| v.to_string() + "\n").collect()
 }
 
 /// Every log carries `frame` (absolute, from power-on, as the core counts) and
-/// `run_frame` (from the run start, as --frames/--replay/--poke/--gpu-frame count).
+/// `run_frame` (from the run start, as --frames and --replay count).
 pub(super) fn with_run_frame(mut v: Value, start: u64) -> Value {
     if let Some(f) = v["frame"].as_u64() {
         v["run_frame"] = json!(f as i64 - start as i64);
@@ -153,35 +139,38 @@ impl Observer for Audio {
     }
 }
 
-/// `gpu_frame` / `gpu_next_draw`: one frame's GPU commands.
-pub(super) struct Gpu {
+/// debug_go gpu and draw: one field's GPU commands, counted from the
+/// first boundary it sees; `stop` ends the go at the field draw found.
+pub(crate) struct Gpu {
     pub capture: GpuCapture,
-    pub start: u64,
+    pub start: Option<u64>,
+    pub stop: bool,
 }
 
 impl Observer for Gpu {
     fn field(&mut self, _rel: u64, m: &mut Machine) -> crate::Result<Flow> {
-        self.capture.boundary(m, self.start, false);
-        Ok(Flow::Go)
+        let start = *self.start.get_or_insert(m.bus.frames);
+        self.capture.boundary(m, start, false);
+        Ok(match self.stop && self.capture.selected.is_some() {
+            true => Flow::Stop("draw"),
+            false => Flow::Go,
+        })
     }
 
     fn last_field(&mut self, _rel: u64, m: &mut Machine, _complete: bool) -> crate::Result<()> {
-        self.capture.boundary(m, self.start, true);
+        let start = *self.start.get_or_insert(m.bus.frames);
+        self.capture.boundary(m, start, true);
         Ok(())
     }
 
     fn finish(self: Box<Self>, _m: &Machine, out: &mut Out) -> crate::Result<()> {
         let v = match &self.capture.selected {
-            Some(frame) => gpu_frame(frame, out)?,
+            Some(frame) => super::gpu_frame_outputs(frame, out.dir, out.files)?,
             None => self.capture.missing(out.termination),
         };
         out.section("gpu_frame", v);
         Ok(())
     }
-}
-
-fn gpu_frame(frame: &CapturedFrame, out: &mut Out) -> crate::Result<Value> {
-    super::gpu_frame_outputs(frame, out.dir, out.files)
 }
 
 /// `find_tick`: every CPU store grouped by the fields it fell in.
@@ -278,7 +267,7 @@ impl Observer for Samples {
             "timing": if tick {
                 "a row at the end of every tick of the game's logic (the glossary binding's tick store), as that store left memory; tick counts the ticks ended since the run start"
             } else {
-                "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input and pokes"
+                "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input"
             },
         });
         if tick {
@@ -355,7 +344,7 @@ impl Observer for Profile {
 }
 
 /// `trace`: instructions, coverage, calls and code pages.
-pub(super) struct Trace {
+pub(crate) struct Trace {
     pub t: Tracer,
     pub scopes: Scopes,
 }
@@ -487,57 +476,6 @@ impl Observer for Screens {
             "screens",
             json!({"dir": out.dir.join("screens"), "count": self.shots.len(), "first": self.shots.first(), "last": self.shots.last()}),
         );
-        Ok(())
-    }
-}
-
-/// `save_state_at`: a state at the start of these run frames.
-pub(super) struct StatesAt {
-    pub at: Vec<u64>,
-    pub dir: PathBuf,
-    pub media: Option<MediaId>,
-    pub states: Vec<Value>,
-}
-
-impl Observer for StatesAt {
-    fn field(&mut self, rel: u64, m: &mut Machine) -> crate::Result<Flow> {
-        if self.at.contains(&rel) && !self.states.iter().any(|s| s["run_frame"] == rel) {
-            let p = self.dir.join(format!("state_f{rel:06}.bin"));
-            let bytes = m.save_state(self.media.clone());
-            std::fs::write(&p, &bytes).map_err(|e| Error::io(&p, e))?;
-            self.states.push(json!({"run_frame": rel, "frame": m.bus.frames, "path": p, "sha256": sha256(&bytes)}));
-        }
-        Ok(Flow::Go)
-    }
-
-    fn last_field(&mut self, rel: u64, m: &mut Machine, complete: bool) -> crate::Result<()> {
-        if complete {
-            self.field(rel, m)?;
-        }
-        Ok(())
-    }
-
-    fn finish(self: Box<Self>, _m: &Machine, out: &mut Out) -> crate::Result<()> {
-        out.section("states", json!(self.states));
-        Ok(())
-    }
-}
-
-/// `poke`: memory written at the start of run frames.
-pub(super) struct Pokes(pub Vec<crate::ram::Poke>);
-
-impl Observer for Pokes {
-    fn field(&mut self, rel: u64, m: &mut Machine) -> crate::Result<Flow> {
-        for p in self.0.iter_mut().filter(|p| p.due(rel)) {
-            let bus = &mut m.bus;
-            p.apply(rel, &mut bus.ram, &mut bus.scratch);
-            bus.ram_written_range(0, psx_core::bus::RAM_SIZE);
-        }
-        Ok(Flow::Go)
-    }
-
-    fn finish(self: Box<Self>, _m: &Machine, out: &mut Out) -> crate::Result<()> {
-        out.section("pokes", json!(self.0.iter().map(|p| p.report()).collect::<Vec<_>>()));
         Ok(())
     }
 }

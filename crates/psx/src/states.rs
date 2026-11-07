@@ -3,7 +3,7 @@
 //! A start state is kept twice: the state itself in `.psx/states/NAME.bin`
 //! (the console's whole memory, so it stays out of git and can be wiped), and
 //! its chain in `notes/states/NAME.json`: every run from power-on that led to
-//! it (frames, input, pokes, until conditions, cards and pad), with the
+//! it (frames, input, until conditions, cards and pad), with the
 //! sha256 of the state each run ended in. `make` runs one more step from a
 //! named state (or power-on) and saves the result; `save` names a state an
 //! earlier run or handoff made, reading the chain back from the runs'
@@ -205,21 +205,17 @@ fn step_of(ctx: &Ctx, file: &Path) -> crate::Result<(Value, Value, Parent)> {
         None => json!("end"),
     };
     let run = run_from_report(&report, &state);
-    finish_step(ctx, &report, run, state, sha)
+    finish_step(ctx, &report, run, json!("end"), sha)
 }
 
-/// The run arguments a run's report gives: its frames, input, pokes, until
+/// The run arguments a run's report gives: its frames, input, until
 /// conditions, and from power-on its pad and cards; `state` a checkpoint's
 /// frame (or "end").
 fn run_from_report(report: &Value, state: &Value) -> Value {
-    let mut run = json!({"frames": report["frames"]["requested"], "input": events(&report["input"]["events"])});
-    if let Some(n) = state.as_u64() {
-        run["save_state_at"] = json!([n]);
-    }
-    let pokes: Vec<Value> = report["pokes"].as_array().into_iter().flatten().map(|p| p["spec"].clone()).collect();
-    if !pokes.is_empty() {
-        run["poke"] = json!(pokes);
-    }
+    let mut step = json!({"run": {"frames": report["frames"]["requested"], "input": events(&report["input"]["events"])},
+        "state": state});
+    upgrade(&mut step);
+    let mut run = step["run"].take();
     if let Some(conds) = report["until"]["conditions"].as_array() {
         run["until"] = json!(conds);
     }
@@ -311,7 +307,8 @@ pub(crate) fn chain_state(ctx: &Ctx, chain_file: &Path) -> crate::Result<(PathBu
 /// second route. The runs before the last are cached as rebuild's are.
 pub(crate) fn reach_idling(ctx: &Ctx, chain_file: &Path, idle: u32) -> crate::Result<PathBuf> {
     let chain = read_json(chain_file)?;
-    let steps = chain["steps"].as_array().cloned().unwrap_or_default();
+    let mut steps = chain["steps"].as_array().cloned().unwrap_or_default();
+    steps.iter_mut().for_each(|s| _ = upgrade(s));
     let Some((last, before)) = steps.split_last() else {
         return Err(Error::invalid(format!("{}: no steps", noted(ctx, chain_file))));
     };
@@ -319,10 +316,7 @@ pub(crate) fn reach_idling(ctx: &Ctx, chain_file: &Path, idle: u32) -> crate::Re
     let (mut key, mut parent) = (String::new(), None::<PathBuf>);
     let cached = |key: &str, step: &Value, parent: Option<&Path>| -> crate::Result<PathBuf> {
         let out = work.join(&key[..16]);
-        let file = match step["state"].as_u64() {
-            Some(n) => out.join(format!("state_f{n:06}.bin")),
-            None => out.join("state.bin"),
-        };
+        let file = out.join("state.bin");
         cached_step(&out, &file, || run_step(ctx, &chain["media"], step, parent, &out))?;
         Ok(file)
     };
@@ -430,13 +424,33 @@ fn chains(chains: &Path) -> Vec<(String, Value)> {
     for e in std::fs::read_dir(chains).into_iter().flatten().flatten() {
         let p = e.path();
         if p.extension().is_some_and(|x| x == "json") {
-            if let (Some(name), Ok(v)) = (p.file_stem().and_then(|s| s.to_str()), read_json(&p)) {
+            if let (Some(name), Ok(mut v)) = (p.file_stem().and_then(|s| s.to_str()), read_json(&p)) {
+                for step in v["steps"].as_array_mut().into_iter().flatten() {
+                    upgrade(step);
+                }
                 out.push((name.to_string(), v));
             }
         }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+/// A step that kept a state at the start of run frame N (save_state_at,
+/// which run no longer has) as the step of N fields it is: the input from
+/// N on never ran before the state. True when it changed.
+fn upgrade(step: &mut Value) -> bool {
+    let Some(n) = step["state"].as_u64() else { return false };
+    let run = &mut step["run"];
+    run["frames"] = json!(n);
+    if let Some(o) = run.as_object_mut() {
+        o.remove("save_state_at");
+    }
+    if let Some(input) = run["input"].as_array_mut() {
+        input.retain(|e| e["frame"].as_u64().is_some_and(|f| f < n));
+    }
+    step["state"] = json!("end");
+    true
 }
 
 /// The chains a state's sha256 is looked up in: the named states', and
@@ -571,13 +585,8 @@ fn run_step(
     run["out"] = json!(out);
     run["summary"] = json!(true);
     run["timeout"] = json!(7200);
-    let state = match step["state"].as_u64() {
-        Some(n) => out.join(format!("state_f{n:06}.bin")),
-        None => {
-            run["save_state"] = json!(true);
-            out.join("state.bin")
-        }
-    };
+    run["save_state"] = json!(true);
+    let state = out.join("state.bin");
     let input = run["input"].as_array().map_or(0, Vec::len);
     if input > crate::replay::INLINE_EVENT_LIMIT {
         let p = out.join("input.json");
@@ -687,10 +696,7 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
             // Steps shared by chains (or by an earlier rebuild on this psx) run once.
             key = sha256(format!("{key}\n{}\n{}\n{}", chain["media_identity"], step["run"], step["state"]).as_bytes());
             let out = work.join(&key[..16]);
-            let file = match step["state"].as_u64() {
-                Some(n) => out.join(format!("state_f{n:06}.bin")),
-                None => out.join("state.bin"),
-            };
+            let file = out.join("state.bin");
             if cached_step(&out, &file, || {
                 run_step(ctx, &chain["media"], step, parent.as_deref(), &out)
                     .map_err(|e| e.with("at", json!({"state": &name, "step": i})))
@@ -775,7 +781,9 @@ fn rebuild(ctx: &Ctx, a: StatesRebuildArgs) -> crate::Result<(bool, Value)> {
                 changed |= step["emulator"] != *emulator;
                 step["emulator"] = emulator.clone();
             }
-            if changed || chain["media"] != kept_media {
+            // Steps upgrade() rewrote are written back as they now run.
+            let on_disk = read_json(&chain_dir.join(format!("{name}.json")))?;
+            if changed || chain["media"] != kept_media || on_disk["steps"] != chain["steps"] {
                 write(&chain_dir.join(format!("{name}.json")), pretty(&chain).as_bytes())?;
             }
         }
@@ -927,7 +935,7 @@ mod tests {
                 "identity": {"from_state": ".psx/states/title.bin", "from_state_sha256": sha},
                 "trace": {"options": options}})
         };
-        let options = json!({"trace_from_frame": 20, "trace_start": null, "trace_frames": 60, "trace_range": [], "max_events": 50});
+        let options = json!({"trace_from_frame": 20, "trace_frames": 60, "trace_range": [], "max_events": 50});
         std::fs::write(run.join("report.json"), report(options.clone(), "abc").to_string()).unwrap();
         let r = recipe_of(&ctx, &run).unwrap();
         assert_eq!(r["from"], "title");
@@ -943,6 +951,20 @@ mod tests {
         std::fs::write(run.join("report.json"), report(Value::Null, "abc").to_string()).unwrap();
         assert!(recipe_of(&ctx, &run).unwrap_err().contains("older psx"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_step_that_kept_a_state_mid_run_becomes_a_run_of_that_many_fields() {
+        let mut step = json!({"run": {"frames": 1600, "save_state_at": [1500],
+            "input": [{"frame": 500, "buttons": ["CROSS"]}, {"frame": 1500, "buttons": []}]},
+            "state": 1500, "state_sha256": "abc"});
+        assert!(upgrade(&mut step));
+        assert_eq!(
+            step,
+            json!({"run": {"frames": 1500, "input": [{"frame": 500, "buttons": ["CROSS"]}]},
+                "state": "end", "state_sha256": "abc"})
+        );
+        assert!(!upgrade(&mut step), "a step of N fields stays as it is");
     }
 
     #[test]

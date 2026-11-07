@@ -1323,7 +1323,7 @@ impl Facts {
                 feature,
                 format!("{} is imported, not checked against what the game built", f.path),
                 "an importer test that compares it with what the game built marks it with import::checking and passes, at HEAD",
-                "write a test in tools/import comparing the importer's output with what the game built from that file (RAM after loading it, its VRAM uploads, a GPU capture of the same view: psx run with trace_cd, gpu_frame), starting with let _checked = import::checking(\"/PATH\"); commit and run psx port check",
+                "write a test in tools/import comparing the importer's output with what the game built from that file (RAM after loading it, its VRAM uploads, a GPU capture of the same view: psx run with trace_cd, psx debug go --gpu), starting with let _checked = import::checking(\"/PATH\"); commit and run psx port check",
             )
         })
     }
