@@ -145,8 +145,7 @@ impl PortInitArgs {
             &serde_json::to_string_pretty(&project).unwrap_or_default(),
             &mut written,
         )?;
-        // Debug files the build left on the disc; port next asks the agent
-        // to read them.
+        // Debug files the build left on the disc; port status lists them.
         let debug = {
             let mut named = Default::default();
             match crate::disc_names::scan(&dest, &media, &[], &dest.join(psx_symbols::names::IMPORTED_DIR), &mut named)
@@ -168,7 +167,6 @@ impl PortInitArgs {
             format!("the person starts a session (Claude Code or Codex) in {}", dest.display()),
             "the person states the goal; the agent writes it in goal.toml and records the scenarios that show it"
                 .into(),
-            "the person reads the goal (psx port confirm) and confirms it (psx port confirm --yes)".into(),
         ];
         if bios.is_empty() {
             next.push("no BIOS was linked: psx bios install in the workspace".into());

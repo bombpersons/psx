@@ -662,7 +662,7 @@ impl Facts {
         let held_out = if self.reviewed() {
             json!({"total": self.held_out.len(), "pass": passed(&self.held_out)})
         } else {
-            json!({"total": self.held_out.len(), "shown": "once the goal is reviewed"})
+            json!({"total": self.held_out.len(), "shown": "port status --plain, for the person"})
         };
         json!({"work": work, "held_out": held_out})
     }
@@ -1303,6 +1303,24 @@ impl Facts {
         )
     }
 
+    /// A review is due: `review_lines` of the code changed since the last,
+    /// or that many written with none yet. Why, and the reviewer's brief.
+    /// Nothing waits on it.
+    pub fn review_due(&self, root: &Path) -> Option<(String, String)> {
+        let limit = self.port.goal.review_lines();
+        match &self.review {
+            Review::Stale { commit, lines, .. } if *lines >= limit => Some((
+                format!("{lines} lines of the code changed since the review at {commit}"),
+                self.follow_up(commit),
+            )),
+            Review::Missing => {
+                let lines = review::lines_written(root);
+                (lines >= limit).then(|| (format!("{lines} lines of the code written and no review yet"), self.brief()))
+            }
+            _ => None,
+        }
+    }
+
     fn review_json(&self) -> Value {
         match &self.review {
             Review::Missing => json!({"state": "missing"}),
@@ -1410,19 +1428,15 @@ impl Facts {
     pub fn plain(&self) -> String {
         let mut s = String::new();
         let goal = &self.port.goal.description;
-        s.push_str(&format!("goal: {}    {}\n", if goal.is_empty() { "(no description)" } else { goal }, self.state()));
+        s.push_str(&format!("goal: {}\n", if goal.is_empty() { "(no description)" } else { goal }));
         s.push_str(&self.shares().plain());
         let failing = self.failing();
         s.push_str(&format!(
-            "recordings  {} work, {} failing · {} held-out plays{}\n",
+            "recordings  {} work, {} failing · {} held-out plays, {} passing\n",
             self.work.len(),
             failing.len(),
             self.held_out.len(),
-            if self.reviewed() {
-                format!(", {} passing", passed(&self.held_out))
-            } else {
-                " (shown once the goal is reviewed)".into()
-            }
+            passed(&self.held_out),
         ));
         if let Ok(a) = &self.assets {
             let (needed, settled) = self.needed();
@@ -1442,13 +1456,6 @@ impl Facts {
                 format!("assets  {settled}/{} needed files checked or unused · disc: {all}\n", needed.len())
             });
         }
-        s.push_str(&match self.port.confirmation() {
-            Confirmation::Missing => "not confirmed yet\n".to_string(),
-            Confirmation::Covers { at } => format!("confirmed {at}\n"),
-            Confirmation::Shrunk { at, missing } => {
-                format!("confirmed {at}, but changed since: {}\n", missing.join(", "))
-            }
-        });
         s.push_str(&match &self.review {
             Review::Holds { commit, findings } => {
                 format!("code reviewed at {commit} ({findings} findings, answered)\n")
@@ -1474,12 +1481,6 @@ impl Facts {
         if !self.port.problems.is_empty() {
             s.push_str(&format!("\n{} problems in the goal or catalogue.\n", self.port.problems.len()));
         }
-        let item = self.next();
-        s.push_str(&format!("\nNext: {}", item.item));
-        if let Some(r) = &item.recording {
-            s.push_str(&format!(" {r}"));
-        }
-        s.push_str(&format!(" ({}): {}\n", item.who, item.why));
         s
     }
 
@@ -1611,14 +1612,7 @@ fn standing(status: &Value) -> Value {
 /// written.
 pub fn look(root: &Path) -> crate::Result<Value> {
     let f = Facts::gather(root)?;
-    let mut v = f.status();
-    v["next"] = f.next().to_json();
-    let g: Option<Guard> =
-        std::fs::read(root.join(".psx/port/next.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-    if let Some(g) = g {
-        v["guard"] = json!({"item": g.item, "count": g.count, "limit": GUARD});
-    }
-    Ok(v)
+    Ok(f.status())
 }
 
 fn guarded(root: &Path, facts: &Facts, item: Item) -> crate::Result<Value> {
@@ -1672,9 +1666,23 @@ impl Op for PortStatusArgs {
                     return f.assets_named(name);
                 }
                 let mut v = f.status();
-                v["next"] = f.next().to_json();
                 progress(&ctx.root, &v);
-                Ok(if self.plain { json!({"text": f.plain()}) } else { v })
+                let mut text = f.plain();
+                if let Some((why, brief)) = f.review_due(&ctx.root) {
+                    text.push_str(&format!("\nreview due: {why}\n"));
+                    v["review_due"] = json!({"why": why, "brief": brief});
+                }
+                if !f.debug_files.is_empty() {
+                    v["debug_files"] = json!(f.debug_files);
+                }
+                // Information only: what the states and shares decided is
+                // the person's now.
+                if let Some(o) = v.as_object_mut() {
+                    for k in ["state", "confirmation", "complete", "shares", "questions"] {
+                        o.remove(k);
+                    }
+                }
+                Ok(if self.plain { json!({"text": text}) } else { v })
             }),
             plain,
         )
@@ -1741,6 +1749,20 @@ mod tests {
         f.ran = [0x8001_0000].into();
         f.needs = assets::Needs::default();
         (d, f)
+    }
+
+    #[test]
+    fn a_review_is_due_after_enough_changed_code_and_never_before() {
+        let (d, mut f) = facts(CONFIRMED, &[]);
+        let stale = |lines| Review::Stale { commit: "abc".into(), changed: vec!["game/src/a.rs".into()], lines };
+        f.review = stale(super::super::REVIEW_LINES - 1);
+        assert_eq!(f.review_due(&d.0), None);
+        f.review = stale(super::super::REVIEW_LINES);
+        let (why, brief) = f.review_due(&d.0).unwrap();
+        assert!(why.contains("since the review at abc"), "{why}");
+        assert!(brief.starts_with("Give this brief"), "{brief}");
+        f.review = Review::Open { unanswered: vec!["a finding".into()] };
+        assert_eq!(f.review_due(&d.0), None);
     }
 
     #[test]

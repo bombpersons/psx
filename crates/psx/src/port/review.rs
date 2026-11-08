@@ -142,6 +142,14 @@ fn lines_since(root: &Path, commit: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// Lines of the code written since the workspace's first commit, for a
+/// port with no review yet.
+pub fn lines_written(root: &Path) -> usize {
+    git(root, &["rev-list", "--max-parents=0", "HEAD"])
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().last().map(|c| lines_since(root, c)))
+        .unwrap_or(0)
+}
+
 /// The review in the workspace `root`.
 pub fn read(root: &Path) -> Review {
     let Ok(text) = std::fs::read_to_string(root.join(REVIEW)) else {

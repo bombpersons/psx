@@ -62,7 +62,7 @@ fix_build runs a kept one in place of fixes/.
   ran that field on the last poll's buttons, so the original's own
   driver delays the input. Input must reach the game every tick, so a
   port never copies the delay: find the function that holds it back and
-  replace it in fixes/ (topic code); port next asks for it.
+  replace it in fixes/ (topic code).
 - fix: the functions of fixes/ run in place of the game's own, so the
   game takes its input every tick. late_input empty with fix and latch on
   is the fix working; fix_calls counts the replacement's calls. A
@@ -182,7 +182,7 @@ play from media or from_state, with the request beside the game. The
 request joins a queue and the call returns at once: go on with other work.
 The person answers when they can, in psx web (in the browser or a window)
 or with psx play, or declines with a note saying why or what to ask
-instead. port next gives a Read item when an answer arrives; status reads
+instead. port_status lists it when an answer arrives; status reads
 it (wait blocks up to 600 s for one). expect gives the end state asked for
 (until's syntax): the result says whether it held, and ask_again. Ask for
 marks to find where the game keeps something: "mark just before and after

@@ -126,6 +126,15 @@ croc workspace's binary isn't touched:
   reading the code it already should; it needs `goal.toml` and the
   recordings.)
 
+Done on branch `simple-port`. `psx port next` and `psx port confirm` still
+work from the command line but are hidden. `port check` on the C example
+passes with no catalogue and no confirmation. Two things differ from the
+list: `port_check` names a review as due and leaves the long brief to
+`port_status`, so a run that ignores it doesn't pay for the brief on every
+check; and held-out results show only in `port status --plain` (the person's
+view), counted, since the gate that showed them is out of reach now. psx web
+loses its Next card and goal state; its other cards wait for step 3.
+
 ### 2. The trial (the person, with Codex)
 
 A fresh, small goal with the trial build. The agent is told to pick its own

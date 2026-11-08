@@ -316,10 +316,10 @@ impl ArgsContext {
         // The media's identity, which a glossary binding's IMAGE_SHA256 names.
         let image_sha256 =
             crate::run_native::open_media(r.media.as_deref()).ok().and_then(|m| m.id).map(|id| id.sha256);
-        // In a port's workspace psx leads with port next; elsewhere port init
+        // In a port's workspace port status shows where it stands; elsewhere port init
         // (it takes the region from the disc) makes one.
         let mut next_calls: Vec<Value> = if ctx.root.join(crate::port::GOAL).is_file() {
-            vec![json!({"tool":"port_next","arguments":{}})]
+            vec![json!({"tool":"port_status","arguments":{}})]
         } else {
             r.media.iter().map(|m| json!({"tool":"port_init","arguments":{"dest":"port","media":m}})).collect()
         };

@@ -1257,7 +1257,6 @@ fn mcp_tools_match_cli() {
         "port_update",
         "port_add",
         "port_status",
-        "port_next",
         "port_check",
         "port_vectors",
     ];

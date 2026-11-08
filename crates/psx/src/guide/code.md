@@ -147,13 +147,13 @@ replays with the checked C. evidence reads it: code cited nowhere or set
 aside in not_ported.toml (the rule may be there), cited code with no
 checked C (the rule is not understood yet), or checked C that
 replays it (the rule is known there: the port does not follow it, or
-what is around it differs). port next's Fix carries it. It is a place
+what is around it differs). port_check's result carries it. It is a place
 to look, not the moment: debug_start on the recording finds that (a pc
 stop at a writer, a watch on reads).
 
 fixes/ holds C that changes what the game does on purpose, most often so
 the game takes its input every tick where its driver delays it
-(late_input, topic run; port next asks for it): a function there replaces the game's function of that name (in the executable, not
+(late_input, topic run): a function there replaces the game's function of that name (in the executable, not
 an overlay) in every recording, play and check, as the fix adjustment
 (topic run). It builds like decomp/, with "names.h", and is not checked
 against the original, since it differs from it; scenario_adjust_check
@@ -187,9 +187,7 @@ the blocks only that way reaches; a branch behind it that never ran is
 counted under branches_behind_missed_ways, not listed. With function=
 (an address or a name) it gives that function's C from Ghidra instead,
 each line with how often the runs ran it and each condition marked never
-true or never false. port next groups the open branches by test
-and outcome, and a wont_reach key may be a test as it gives them: it
-answers for every branch of the code to port testing it.
+true or never false. port_status branches=true groups the open branches by test and outcome.
 code_coverage_diff runs=[...]
 against=[...]: only lists the functions only the first set ran, further the
 blocks and branch ways (taken, fell through) only they took in functions
@@ -233,9 +231,8 @@ with no hook naming its way is a gap until one does. Positions and the
 map are psx's only knowledge of the script: reading it is yours. A
 recording made before the map changed is made again.
 
-A catalogue entry's code lists stretches of a program beside functions,
-name+0xSTART..0xEND (end excluded), and wont_reach takes a position
-(name+0xAT) or a stretch inside them. code_coverage and code_coverage_diff
+The port's code cites stretches of a program beside functions,
+name+0xSTART..0xEND (end excluded). code_coverage and code_coverage_diff
 on recordings report programs: stretches read, sites and ways (with a
 map, statements run and routines entered), and in a diff the ones only the
 first set ran, which locate a behaviour's part of the script.
@@ -244,7 +241,7 @@ first set ran, which locate a behaviour's part of the script.
 
 The inventory reads an overlay no disc file holds only around the code that
 ran (bounded_by found_code), and coverage counts only that (code_not_held);
-port_next gives Unpack. Read it whole from the decompressed bytes:
+port_status lists it under unpack. Read it whole from the decompressed bytes:
 1. watch one of its addresses: the writer's pc is the decompressor;
    code_disasm it and its callers for the format and the disc data read.
 2. Decompress that data into a directory with an unpacked.json:

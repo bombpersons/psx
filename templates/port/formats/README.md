@@ -49,9 +49,8 @@ How much of the disc the port extracts is the person's choice, in
 A name is a disc path or archive entry as above (`/MAPS/*.WLD`,
 `/CROCFILE.1:CROC.*`) or `format:<id>`, every file of a format doc's id or
 a standard format's (`format:TIM`). A scenario's toml names the assets its
-recordings need, and those come in whatever the goal says. `psx port next`
-asks for each needed file until it is checked or unused; a `format:` id no
-doc has yet is first a format to find. `psx port status --assets NAME`
+recordings need, and those come in whatever the goal says. A `format:` id
+no doc has yet is first a format to find. `psx port status --assets NAME`
 lists the files a name covers.
 
 ```toml

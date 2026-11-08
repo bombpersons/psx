@@ -427,7 +427,7 @@ fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
         }
         if std::time::Instant::now() >= deadline {
             let mut v = json!({"status": r.state.name(), "run_dir": dir,
-                "note": "the person has not answered yet: go on with other work; port next hands out a Read item when they do"});
+                "note": "the person has not answered yet: go on with other work; port status lists it when they do"});
             match &r.state {
                 queue::State::Playing(live) => v["live"] = json!(live),
                 _ => {

@@ -256,11 +256,13 @@ enum PortAction {
     Add(template::PortAddArgs),
     /// Show the goal, the person's held-out plays, the wont_reach branches and any problems;
     /// with --yes, record the person's confirmation in goal.toml.
+    #[command(hide = true)]
     Confirm(port::PortConfirmArgs),
-    /// The goal's recordings by state, its code and branches, problems, and the item due now.
+    /// The goal's recordings by state, its code and branches, problems, and whether a review is due.
     Status(port::PortStatusArgs),
     /// The one item due now: what, why, and the fact that will show it done.
     /// An agent item handed out three times with nothing changed is reported as stuck instead.
+    #[command(hide = true)]
     Next(port::PortNextArgs),
     /// Replay the recordings against the port (its program, over the port protocol) and
     /// write the goal's verdict for HEAD, which must have no uncommitted changes.

@@ -193,7 +193,7 @@ pub fn enqueue(dir: &Path, args: &Value) -> crate::Result<Value> {
     let position = list_in(&root_queue).iter().filter(|r| r.state == State::Queued).count();
     let mut v = json!({
         "status": "queued", "run_dir": dir, "position": position,
-        "note": "Queued for the person, who answers play requests when they can (psx web, or psx play). Go on with other work: port next hands out a Read item once they answer, recorded or declined with their note, and scenario_play with status returns the answer.",
+        "note": "Queued for the person, who answers play requests when they can (psx web, or psx play). Go on with other work: port status lists it once they answer, recorded or declined with their note, and scenario_play with status returns the answer.",
         "status_call": {"tool": "scenario_play", "arguments": {"status": dir}},
     });
     if !after.is_null() {

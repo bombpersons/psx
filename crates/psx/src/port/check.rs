@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::next::Facts;
 use super::next::Git;
 use super::verdict::{self, Verdict};
 use super::{Port, assets};
@@ -372,6 +373,9 @@ impl PortCheckArgs {
             m
         };
         let mut out = json!({"commit": head, "verdict": verdict});
+        if let Some((why, _)) = Facts::gather(root).ok().and_then(|f| f.review_due(root)) {
+            out["review_due"] = json!(format!("{why}: port_status has the brief for a reviewer"));
+        }
         if let Some(r) = imports {
             let p = root.join(assets::REPORT);
             crate::write_atomic(&p, &serde_json::to_vec_pretty(&r).unwrap_or_default())

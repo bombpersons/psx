@@ -6,17 +6,20 @@ emulator in disguise. What the game does is measured from the original with
 the psx toolkit (its MCP server is in `.mcp.json`); everything here is
 backed by that evidence.
 
-## The loop
+## How the work goes
 
-When the workspace has `goal.toml`, psx leads the work. Call `port_next`: it
-gives one item (what, for which recording when it is one's, why, and the
-fact that will show it done). Do it until that fact holds, commit, saying
-what changed, and call `port_next` again. `port_status` shows where the
-goal stands: its recordings, the code to port and its branches. An item for the
-person (Confirm, Stuck, Wait) waits for them: tell them and stop. A play
-request does not: it queues and `port_next` goes on to other work. psx's
-`guide` tool explains each item; `catalogue/README.md` has the
-catalogue's files. psx writes `.psx/verdicts/`; never edit them.
+`goal.toml` says what the person wants. The recordings of the original
+say what's right: `port_check` replays them against the port and gives,
+for each, the first difference and the code that wrote the value. Passing
+them is the test. `port_status` is information: what passes, what the
+recordings ran and the port cites, plays waiting or answered. psx's
+`guide` tool is the reference for the commands. psx writes
+`.psx/verdicts/`; never edit them.
+
+What to do next is yours to choose: say what you picked and why, and go
+where the person points when they do. Keep `STATUS.md` current. The person
+decides when it's done, by playing it; `scenario_play` asks them to play
+something, and it queues, so carry on with other work.
 
 ## Layout
 
@@ -103,15 +106,11 @@ yours to decide. What the tools rely on besides the above:
 
 ## The review
 
-Each time the goal comes to match its recordings, again when it is
-finished (its branches resolved), and when much of the code has changed
-since the last review, the code is reviewed by someone who did not
-write it: a sub-agent or a fresh session, given the brief
-`port_next` prints (the whole code the first time, then what changed
-since). The recordings already check what the code does; the
-review asks whether you would write a new game like this, and its
-findings say how to restructure it. They go in `review.md`; answer each
-one: done (with `port_check` passing again), or kept and why.
+When much of the code has changed, `port_check` says a review is due and
+`port_status` gives the brief for someone who didn't write it: a sub-agent
+or a fresh session. The recordings already check what the code does; the
+review asks whether you would write a new game like this. Findings go in
+`review.md`, each answered: done, or kept and why. Nothing waits on it.
 
 ## Beyond the recordings
 

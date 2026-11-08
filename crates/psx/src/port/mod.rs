@@ -48,12 +48,10 @@ pub const SCENARIOS: &str = "scenarios";
 pub const SOURCES: [&str; 2] = ["game", "tools"];
 
 pub(crate) const GOAL_TOML: &str = "\
-# What the person wants from this port, in their words. The person confirms
-# it with `psx port confirm --yes`, which writes `confirmed`; the description,
-# the assets and the person's held-out plays changing needs confirming again.
+# What the person wants from this port, in their words.
 description = \"\"
 assets = false  # what to extract: true (every disc file), false, or names: [\"format:level\", \"/MAPS/*.WLD\"] (formats/README.md)
-# review_lines = 800  # a follow-up review once the code changed by this many lines since the last
+# review_lines = 800  # psx says a review is due once the code changed by this many lines since the last
 # held_out = []  # the person's plays, scenario/name: judged, never worked on
 ";
 
