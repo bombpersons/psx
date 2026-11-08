@@ -39,6 +39,12 @@ So psx keeps the signal and gives up steering.
 - **`port status`: information only.** Recordings passing, functions the
   recordings ran and how many the port cites, branches run, plays waiting or
   answered. It says nothing about what to do and has no states.
+- **A nudge to review.** Once `review_lines` (800 by default) of `game/` and
+  `tools/` have changed since the last `review.md`, or that much code exists
+  with none yet, `port check` and `port status` say so and hand over the
+  brief for a reviewer who hasn't seen the work, as the Review item does now.
+  Nothing waits on it: findings stay in `review.md` for the agent to answer
+  or the person to read, and committing a new review quiets it.
 - The play queue: `scenario_play`, `psx play`, psx web.
 - `psx web`'s recordings, side-by-side screens and stats.
 - `goal.toml`, cut to the description, the assets and `held_out`. A held-out
@@ -51,8 +57,8 @@ So psx keeps the signal and gives up steering.
 - `port next` and its items, including Locate, Cover and the stuck counter
   (`port/next.rs`, 1,980 lines).
 - `port confirm` and `confirmed`; the person confirms by saying so.
-- Review as a gate (`port/review.rs`, `review_lines`). A review is something
-  the person asks a fresh agent for.
+- Review as a gate: reviews due when the goal comes to match or finishes,
+  and unanswered findings or a stale review holding anything back.
 - The states (working, matching, finished, reviewed, complete) and the shares
   as targets.
 - `wont_reach.toml` and `questions.md`. A branch nobody reaches is a number
@@ -114,6 +120,8 @@ croc workspace's binary isn't touched:
 - The guide's overview loses the loop.
 - `port status` lists plays waiting and answered, which only `port next`
   announces today.
+- `port check` and `port status` carry the review nudge, moved out of the
+  Review item with its brief.
 - `port check` passes on a goal with no catalogue and no confirmation. (From
   reading the code it already should; it needs `goal.toml` and the
   recordings.)
@@ -130,6 +138,8 @@ It worked if:
 - recordings get to passing at least as fast per hour as the current croc run
   does under `port next`;
 - less time goes on code that no compared quantity depends on;
+- the nudge gets reviews done, and the findings get acted on, without
+  anything blocking;
 - when the agent says something is done, playing it agrees.
 
 If it wanders, or stops early, add back the smallest thing that answers
