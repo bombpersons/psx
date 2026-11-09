@@ -19,7 +19,19 @@ recordings ran and the port cites, plays waiting or answered. psx's
 What to do next is yours to choose: say what you picked and why, and go
 where the person points when they do. Keep `STATUS.md` current. The person
 decides when it's done, by playing it; `scenario_play` asks them to play
-something, and it queues, so carry on with other work.
+something, and it queues, so carry on with other work. When a piece is
+done, go on to the next unless the person has asked you to stop.
+
+When you reach something the original holds as a value (a camera, the
+animation playing, a score), add it to `glossary/` and to the scenarios'
+`[compare]` as soon as it can be measured, and refresh the recordings, so
+`port_check` compares it from then on. Samples of your own are for
+exploring and don't replace that. A recording that starts failing because
+of it has found work to do.
+
+Commit as you go and run `port_check` on the commits. It judges only a
+commit with no uncommitted changes, and `cargo test` doesn't change what
+`port_status` shows.
 
 ## Layout
 

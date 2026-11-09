@@ -127,12 +127,23 @@ pub fn says(root: &Path) -> (bool, bool) {
         .unwrap_or_default()
 }
 
-/// Lines added and removed in the code by the commits since `commit` (not
-/// what is uncommitted: work in progress is not yet up for review).
-fn lines_since(root: &Path, commit: &str) -> usize {
-    let mut args = vec!["diff", "--numstat", commit, "HEAD", "--"];
+/// The code's files git doesn't track yet.
+fn untracked(root: &Path) -> Vec<String> {
+    let mut args = vec!["ls-files", "--others", "--exclude-standard", "--"];
     args.extend(CODE);
     git(root, &args)
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Lines added and removed in the code since `commit`, committed or not,
+/// new files included: an agent that doesn't commit still gets reviewed.
+fn lines_since(root: &Path, commit: &str) -> usize {
+    let mut args = vec!["diff", "--numstat", commit, "--"];
+    args.extend(CODE);
+    let new: usize =
+        untracked(root).iter().map(|f| std::fs::read_to_string(root.join(f)).map_or(0, |t| t.lines().count())).sum();
+    new + git(root, &args)
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
@@ -171,9 +182,10 @@ pub fn read(root: &Path) -> Review {
     // Against the working tree: uncommitted changes count as changes.
     let mut args = vec!["diff", "--name-only", f.commit.as_str(), "--"];
     args.extend(CODE);
-    let changed: Vec<String> = git(root, &args)
+    let mut changed: Vec<String> = git(root, &args)
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
         .unwrap_or_default();
+    changed.extend(untracked(root));
     if !changed.is_empty() {
         return Review::Stale { lines: lines_since(root, &f.commit), commit: f.commit, changed };
     }
@@ -303,6 +315,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn lines_written_counts_uncommitted_and_new_files_in_the_code_only() {
+        let d = super::super::tests::tempdir::Dir::new();
+        let run = |args: &[&str]| {
+            let base = ["-c", "user.name=t", "-c", "user.email=t@t"];
+            assert!(git(&d.0, &[&base[..], args].concat()).unwrap().status.success(), "{args:?}");
+        };
+        run(&["init", "-q"]);
+        std::fs::create_dir_all(d.0.join("game")).unwrap();
+        std::fs::write(d.0.join("game/a.rs"), "one\ntwo\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "first"]);
+        assert_eq!(lines_written(&d.0), 0);
+        std::fs::write(d.0.join("game/a.rs"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(d.0.join("game/b.rs"), "a\nb\nc\n").unwrap();
+        std::fs::write(d.0.join("notes.md"), "not code\n").unwrap();
+        assert_eq!(lines_written(&d.0), 4);
+    }
+
+    #[test]
     fn finding_texts_keep_the_text_and_answer() {
         let body = "## Stomp is a bool\n`stomping` is...\n\n**Answer:** fixed in 7c01d2e\nand tested\n## One system\ntext\n**Answer:**\n";
         let f = finding_texts(body);
@@ -356,9 +387,9 @@ mod tests {
         std::fs::write(root.join("catalogue/questions.md"), "- why\n").unwrap();
         assert!(read(root).holds());
         std::fs::write(root.join("game/src/jump.rs"), "fn jump() { let _ = 1; }\n").unwrap();
-        // Uncommitted: stale, with no lines committed since.
+        // Uncommitted: stale, its lines counted.
         let stale = |lines| Review::Stale { commit: head.clone(), changed: vec!["game/src/jump.rs".into()], lines };
-        assert_eq!(read(root), stale(0));
+        assert_eq!(read(root), stale(2));
         run(&["commit", "-qam", "jump"]);
         assert_eq!(read(root), stale(2));
         std::fs::write(root.join(REVIEW), "---\ncommit: x\n---\n").unwrap();

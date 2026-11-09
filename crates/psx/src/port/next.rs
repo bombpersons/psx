@@ -253,6 +253,8 @@ pub struct Shares {
     pub recordings: (usize, usize),
     pub code: (usize, usize),
     pub branches: (usize, usize),
+    /// The work recordings have no result for this commit.
+    pub unchecked: bool,
 }
 
 impl Shares {
@@ -264,11 +266,13 @@ impl Shares {
 
     fn plain(&self) -> String {
         let pct = |(n, of): (usize, usize)| (n * 100).checked_div(of).map_or("-".to_string(), |p| format!("{p}%"));
+        let recordings = if self.unchecked {
+            format!("{} recordings not checked", self.recordings.1)
+        } else {
+            format!("recordings passing {}/{} ({})", self.recordings.0, self.recordings.1, pct(self.recordings))
+        };
         format!(
-            "goal    recordings passing {}/{} ({}) · code cited or not ported {}/{} ({}) · branches resolved {}/{} ({})\n",
-            self.recordings.0,
-            self.recordings.1,
-            pct(self.recordings),
+            "goal    {recordings} · code cited or not ported {}/{} ({}) · branches resolved {}/{} ({})\n",
             self.code.0,
             self.code.1,
             pct(self.code),
@@ -588,6 +592,7 @@ impl Facts {
             recordings: (passed(&self.work) + plays, self.work.len() + self.held_out.len()),
             code: (accounted, self.ran.len()),
             branches: (resolved, self.branches.len()),
+            unchecked: !self.work.is_empty() && !matches!(self.verdict, State::Current(_)),
         }
     }
 
@@ -651,7 +656,7 @@ impl Facts {
         let checked = self.work.iter().all(|(_, f)| f.is_some());
         let failing = self.failing();
         let mut work = json!({"total": self.work.len(), "pass": checked.then(|| passed(&self.work)),
-                              "fail": failing.len()});
+                              "fail": checked.then_some(failing.len())});
         if !failing.is_empty() {
             let of = |r: &String| {
                 let f = self.work.iter().find(|(n, _)| n == r).and_then(|(_, f)| f.clone()).unwrap_or_default();
@@ -1306,6 +1311,16 @@ impl Facts {
     /// A review is due: `review_lines` of the code changed since the last,
     /// or that many written with none yet. Why, and the reviewer's brief.
     /// Nothing waits on it.
+    /// Every quantity the recordings' scenarios compare, by name.
+    pub fn compared(&self, root: &Path) -> Vec<String> {
+        let names: BTreeSet<String> = super::scenarios_of(self.port.recordings.all())
+            .iter()
+            .filter_map(|id| crate::scenario::Loaded::load(root, id).scenario)
+            .flat_map(|s| s.compare.into_keys())
+            .collect();
+        names.into_iter().collect()
+    }
+
     pub fn review_due(&self, root: &Path) -> Option<(String, String)> {
         let limit = self.port.goal.review_lines();
         match &self.review {
@@ -1431,10 +1446,19 @@ impl Facts {
         s.push_str(&format!("goal: {}\n", if goal.is_empty() { "(no description)" } else { goal }));
         s.push_str(&self.shares().plain());
         let failing = self.failing();
+        let n = self.work.len();
+        let work = match &self.verdict {
+            State::Current(_) => format!("{n} work, {} failing", failing.len()),
+            State::Missing => format!("{n} work, never checked (port_check)"),
+            State::Stale { .. } if self.git.clean => {
+                format!("{n} work, not checked since the last change (port_check)")
+            }
+            State::Stale { .. } => {
+                format!("{n} work, not checked since the last change (uncommitted changes; port_check judges a commit)")
+            }
+        };
         s.push_str(&format!(
-            "recordings  {} work, {} failing · {} held-out plays, {} passing\n",
-            self.work.len(),
-            failing.len(),
+            "recordings  {work} · {} held-out plays, {} passing\n",
             self.held_out.len(),
             passed(&self.held_out),
         ));
@@ -1462,7 +1486,7 @@ impl Facts {
             }
             Review::Stale { commit, changed, lines } => {
                 format!(
-                    "code reviewed at {commit}, changed since in {} files ({lines} of {} lines committed before a follow-up)\n",
+                    "code reviewed at {commit}, changed since in {} files ({lines} of {} lines before a follow-up)\n",
                     changed.len(),
                     self.port.goal.review_lines()
                 )
@@ -1668,6 +1692,12 @@ impl Op for PortStatusArgs {
                 let mut v = f.status();
                 progress(&ctx.root, &v);
                 let mut text = f.plain();
+                let compared = f.compared(&ctx.root);
+                text.push_str(&format!(
+                    "compared  {}\n",
+                    if compared.is_empty() { "nothing yet".into() } else { compared.join(", ") }
+                ));
+                v["compared"] = json!(compared);
                 if let Some((why, brief)) = f.review_due(&ctx.root) {
                     text.push_str(&format!("\nreview due: {why}\n"));
                     v["review_due"] = json!({"why": why, "brief": brief});
@@ -1749,6 +1779,17 @@ mod tests {
         f.ran = [0x8001_0000].into();
         f.needs = assets::Needs::default();
         (d, f)
+    }
+
+    #[test]
+    fn recordings_without_a_result_read_as_not_checked_rather_than_failing_none() {
+        let (_d, mut f) = facts(CONFIRMED, &[]);
+        f.work = vec![("a/b".to_string(), None)];
+        let text = f.plain();
+        assert!(text.contains("1 recordings not checked"), "{text}");
+        assert!(text.contains("1 work, never checked"), "{text}");
+        assert!(!text.contains("failing"), "{text}");
+        assert!(f.status()["recordings"]["work"]["fail"].is_null());
     }
 
     #[test]
