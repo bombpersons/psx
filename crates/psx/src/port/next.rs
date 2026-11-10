@@ -287,6 +287,17 @@ impl Shares {
 /// HEAD; None without one.
 pub type Results = Vec<(String, Option<Vec<String>>)>;
 
+/// The last tick of a recording (`<scenario>/<name>`), 0 if it can't be read.
+pub(crate) fn last_tick(root: &Path, recording: &str) -> u64 {
+    let text = std::fs::read_to_string(root.join(crate::scenario::SCENARIOS).join(format!("{recording}.jsonl")));
+    text.ok()
+        .and_then(|t| {
+            t.lines().rev().find(|l| !l.trim().is_empty()).and_then(|l| serde_json::from_str::<Value>(l).ok())
+        })
+        .and_then(|v| v["tick"].as_u64())
+        .unwrap_or(0)
+}
+
 /// Every recording passed.
 fn all_pass(rs: &Results) -> bool {
     !rs.is_empty() && rs.iter().all(|(_, f)| f.as_ref().is_some_and(Vec::is_empty))
@@ -1311,6 +1322,15 @@ impl Facts {
     /// A review is due: `review_lines` of the code changed since the last,
     /// or that many written with none yet. Why, and the reviewer's brief.
     /// Nothing waits on it.
+    /// How much of the game the work recordings can show: how many, from
+    /// how many starting points, and the longest. None without any.
+    pub fn reach(&self, root: &Path) -> Option<Value> {
+        let names: Vec<String> = self.work.iter().map(|(n, _)| n.clone()).collect();
+        let longest = names.iter().max_by_key(|n| last_tick(root, n))?;
+        Some(json!({"recordings": names.len(), "starting_points": super::scenarios_of(&names).len(),
+                    "longest": longest, "longest_ticks": last_tick(root, longest)}))
+    }
+
     /// Every quantity the recordings' scenarios compare, by name.
     pub fn compared(&self, root: &Path) -> Vec<String> {
         let names: BTreeSet<String> = super::scenarios_of(self.port.recordings.all())
@@ -1692,6 +1712,16 @@ impl Op for PortStatusArgs {
                 let mut v = f.status();
                 progress(&ctx.root, &v);
                 let mut text = f.plain();
+                if let Some(r) = f.reach(&ctx.root) {
+                    text.push_str(&format!(
+                        "reach  {} recordings from {} starting points, longest {} ticks ({})\n",
+                        r["recordings"],
+                        r["starting_points"],
+                        r["longest_ticks"],
+                        r["longest"].as_str().unwrap_or("")
+                    ));
+                    v["reach"] = r;
+                }
                 let compared = f.compared(&ctx.root);
                 text.push_str(&format!(
                     "compared  {}\n",
@@ -1779,6 +1809,25 @@ mod tests {
         f.ran = [0x8001_0000].into();
         f.needs = assets::Needs::default();
         (d, f)
+    }
+
+    #[test]
+    fn reach_counts_starting_points_and_finds_the_longest_recording() {
+        let header = "{\"format\":\"scenario-recording\"}\n";
+        let (d, mut f) = facts(
+            CONFIRMED,
+            &[
+                ("scenarios/a/short.jsonl", &format!("{header}{{\"tick\":5}}\n")),
+                ("scenarios/a/long.jsonl", &format!("{header}{{\"tick\":900,\"values\":{{}}}}\n")),
+                ("scenarios/b/other.jsonl", &format!("{header}{{\"tick\":40}}\n")),
+            ],
+        );
+        f.work.clear();
+        assert_eq!(f.reach(&d.0), None);
+        f.work = ["a/short", "a/long", "b/other"].iter().map(|n| (n.to_string(), None)).collect();
+        let r = f.reach(&d.0).unwrap();
+        assert_eq!((r["recordings"].as_u64(), r["starting_points"].as_u64()), (Some(3), Some(2)));
+        assert_eq!((r["longest"].as_str(), r["longest_ticks"].as_u64()), (Some("a/long"), Some(900)));
     }
 
     #[test]

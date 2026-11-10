@@ -192,11 +192,11 @@ pub fn resolve(
     // An explicit BIOS requires no inventory or media inspection before validation.
     let region = if discover || bios_path.is_none() { region(media.as_deref())? } else { None };
     let mut candidates = if discover || bios_path.is_none() { bios::inventory(root)? } else { vec![] };
+    let project_bios = cfg.bios.as_ref().map(|p| crate::moved::find(root, p));
     if bios_path.is_none() {
-        if let Some(p) = &cfg.bios {
-            let p = crate::moved::find(root, p);
-            if p.is_file() && !candidates.iter().any(|c| c.path == p) {
-                candidates.push(bios::inspect(&p)?);
+        if let Some(p) = &project_bios {
+            if p.is_file() && !candidates.iter().any(|c| c.path == *p) {
+                candidates.push(bios::inspect(p)?);
             }
         }
     }
@@ -212,7 +212,10 @@ pub fn resolve(
                 }
             }
         }
-        let matching = candidates.iter().find(|c| c.native_sha256 == s.bios_sha256);
+        let matching = candidates
+            .iter()
+            .filter(|c| c.native_sha256 == s.bios_sha256)
+            .min_by_key(|c| bios_rank(&c.path, project_bios.as_deref(), root));
         if matching.is_none() {
             warnings.push("A saved state requires its exact BIOS hash; regional substitutes are not selected.".into());
         }
@@ -356,9 +359,28 @@ impl ArgsContext {
     }
 }
 
+/// Among copies of a state's BIOS: the project's own, then one inside the
+/// project, then any, so a project never reaches outside for a BIOS it has.
+fn bios_rank(path: &Path, project: Option<&Path>, root: &Path) -> (bool, bool, PathBuf) {
+    (Some(path) != project, !path.starts_with(root), path.to_path_buf())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_state_takes_the_projects_copy_of_its_bios_over_the_shared_one() {
+        let root = Path::new("/home/me/projects/port");
+        let shared = Path::new("/home/me/.local/share/psx/bios/a.bin");
+        let inside = root.join("bios/a.bin");
+        let first = |paths: [&Path; 2], project| {
+            paths.into_iter().min_by_key(|p| bios_rank(p, project, root)).unwrap().to_path_buf()
+        };
+        assert_eq!(first([shared, &inside], None), inside);
+        assert_eq!(first([shared, &inside], Some(inside.as_path())), inside);
+        assert_eq!(first([shared, shared], None), shared);
+    }
 
     #[test]
     fn saved_project_media_is_the_default() {

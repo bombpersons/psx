@@ -164,7 +164,8 @@ psx-port.toml, replays each recording through it and writes the verdicts.
 ## Status and reviews
 
 port_status is information and decides nothing: the recordings passing, the
-quantities they compare (compared), the functions they ran and how many the port cites or lists as not ported,
+quantities they compare (compared), how far they reach (reach: starting
+points and the longest), the functions they ran and how many the port cites or lists as not ported,
 branches taken both ways (branches=true lists the open ones), assets,
 problems in goal.toml or the catalogue, plays waiting or answered
 (scenario_play status reads an answer), debug files on the disc (code_symbols

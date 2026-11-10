@@ -22,12 +22,18 @@ decides when it's done, by playing it; `scenario_play` asks them to play
 something, and it queues, so carry on with other work. When a piece is
 done, go on to the next unless the person has asked you to stop.
 
+Ask the person for a play of the goal with `scenario_play` as soon as the
+first recordings work: one long play shows far more of the game than short
+recordings you make yourself.
+
 When you reach something the original holds as a value (a camera, the
 animation playing, a score), add it to `glossary/` and to the scenarios'
 `[compare]` as soon as it can be measured, and refresh the recordings, so
 `port_check` compares it from then on. Samples of your own are for
 exploring and don't replace that. A recording that starts failing because
-of it has found work to do.
+of it has found work to do. A value you only need while tracing a rule can
+be compared while you do; what stays compared should be what the player
+sees or what the game's rules depend on.
 
 Commit as you go and run `port_check` on the commits. It judges only a
 commit with no uncommitted changes, and `cargo test` doesn't change what
