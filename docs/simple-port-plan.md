@@ -103,7 +103,9 @@ Each is added only if the trial shows the problem it solves:
 - A fresh agent session per failing recording, which beat long compacted
   sessions in the published runs.
 - Scored screens, since models claim screens match until a pixel difference
-  says otherwise.
+  says otherwise. (Added to the trial as `port_status screens=true`,
+  information only, after 10 passing recordings said nothing of framing a
+  reviewer saw at once.)
 - Negative controls: `port check` runs a corrupted recording and must fail.
 
 ## Steps

@@ -1692,6 +1692,12 @@ pub struct PortStatusArgs {
     #[arg(long)]
     #[serde(default)]
     pub assets: Option<String>,
+    /// Draw the work recordings on both sides and score how far the port's
+    /// picture is from the original's. Takes minutes; without it the last
+    /// scores are repeated.
+    #[arg(long)]
+    #[serde(default)]
+    pub screens: bool,
     /// Text for the person instead of JSON.
     #[arg(long)]
     #[serde(default)]
@@ -1721,6 +1727,16 @@ impl Op for PortStatusArgs {
                         r["longest"].as_str().unwrap_or("")
                     ));
                     v["reach"] = r;
+                }
+                let scores = if self.screens {
+                    let work: Vec<String> = f.work.iter().map(|(n, _)| n.clone()).collect();
+                    Some(super::screens::score(ctx, &work, f.git.head.as_deref(), f.git.clean)?)
+                } else {
+                    super::screens::last(&ctx.root)
+                };
+                if let Some(s) = scores {
+                    text.push_str(&super::screens::line(&s));
+                    v["screens"] = s;
                 }
                 let compared = f.compared(&ctx.root);
                 text.push_str(&format!(

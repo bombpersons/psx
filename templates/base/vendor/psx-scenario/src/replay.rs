@@ -25,6 +25,7 @@
 //! many were drawn and what stopped them early; `no_screen` there says the
 //! port draws nothing yet. Progress goes to stdout (`tick N/M`).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -100,16 +101,27 @@ pub fn run<P: Port>(port: P, recording: &Path, out: &Path) -> Result<(), String>
 }
 
 /// [`run`], with progress (`tick N/M`) to `progress`.
-pub fn run_with<P: Port>(
+pub fn run_with<P: Port>(port: P, recording: &Path, out: &Path, progress: impl FnMut(&str)) -> Result<(), String> {
+    run_ticks(port, recording, out, None, progress)
+}
+
+/// As [`run_with`], drawing only tick 0 and `only` (the game still runs
+/// every tick).
+pub fn run_sampled<P: Port>(port: P, recording: &Path, out: &Path, only: &BTreeSet<u64>) -> Result<(), String> {
+    run_ticks(port, recording, out, Some(only), |_| {})
+}
+
+fn run_ticks<P: Port>(
     mut port: P,
     recording: &Path,
     out: &Path,
+    only: Option<&BTreeSet<u64>>,
     mut progress: impl FnMut(&str),
 ) -> Result<(), String> {
     let mut summary = json!({"recording": recording, "drawn": 0});
     let result = std::fs::create_dir_all(out)
         .map_err(|e| format!("{}: {e}", out.display()))
-        .and_then(|_| draw(&mut port, recording, out, &mut summary, &mut progress));
+        .and_then(|_| draw(&mut port, recording, out, only, &mut summary, &mut progress));
     if let Err(e) = &result {
         summary["error"] = json!(e);
         eprintln!("replay: {e}");
@@ -122,6 +134,7 @@ fn draw<P: Port>(
     port: &mut P,
     recording: &Path,
     out: &Path,
+    only: Option<&BTreeSet<u64>>,
     summary: &mut Value,
     progress: &mut impl FnMut(&str),
 ) -> Result<(), String> {
@@ -151,14 +164,16 @@ fn draw<P: Port>(
                 break;
             }
         };
+        let wanted = only.is_none_or(|s| s.contains(&t.tick));
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             port.tick(&pad);
-            port.screen()
+            wanted.then(|| port.screen())
         }));
         let saved = match run {
             Err(p) => Err(format!("tick {} panicked: {}", t.tick, panic_message(&p))),
-            Ok(None) => Err(format!("tick {}: the port drew no screen", t.tick)),
-            Ok(Some(f)) => {
+            Ok(None) => Ok(()),
+            Ok(Some(None)) => Err(format!("tick {}: the port drew no screen", t.tick)),
+            Ok(Some(Some(f))) => {
                 f.save_png(&out.join(format!("{}.png", t.tick))).map_err(|e| format!("tick {}: {e}", t.tick))
             }
         };
@@ -166,7 +181,7 @@ fn draw<P: Port>(
             failure = Some(e);
             break;
         }
-        drawn += 1;
+        drawn += usize::from(wanted);
         summary["drawn"] = json!(drawn);
         if t.tick % 60 == 0 {
             progress(&format!("tick {}/{}", t.tick, ticks.len()));

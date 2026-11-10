@@ -39,6 +39,12 @@ Commit as you go and run `port_check` on the commits. It judges only a
 commit with no uncommitted changes, and `cargo test` doesn't change what
 `port_status` shows.
 
+Recordings don't compare the picture. When what's drawn has changed, run
+`port_status` with `screens=true`: it scores how far the port's picture is
+from the original's and names the worst moment, for `scenario_show` with
+`screens` to show you. Things not drawn yet always count, so watch the
+trend.
+
 ## Layout
 
 ```

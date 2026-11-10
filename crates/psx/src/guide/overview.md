@@ -172,6 +172,13 @@ problems in goal.toml or the catalogue, plays waiting or answered
 reads them), and what stops a recording being judged (unrecorded, unbuilt,
 late_input, unpack).
 
+port_status screens=true draws each work recording on both sides at up to
+32 moments and scores how far the port's picture is from the original's (0
+the same, 100 black against white), with the worst tick of each;
+scenario_show screens=true over that tick shows it. It takes minutes, and
+without it port_status repeats the last scores. It is information only: what
+isn't drawn yet always counts, so read the trend.
+
 Once review_lines lines of game/ and tools/ changed since the last review
 (goal.toml, 800 by default), or that many with none yet, port_check says a
 review is due and port_status gives review_due: why, and the brief for a

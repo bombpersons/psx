@@ -7,7 +7,7 @@
 //! frames come from replaying it on psx-core in a child process
 //! (`psx __web-replay`), cached per recording in the data directory.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -1184,12 +1184,19 @@ fn frame(st: &State, root: &Path, id: &str, name: &str, tick: &str, decomp: bool
 /// the agent's C for the functions whose check passed), the screen at the
 /// end of each tick to `DIR/<tick>.png`, then (when it ran) `DIR/done.json`.
 pub fn replay_child(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -> Outcome {
-    Outcome::result(replay_frames(ctx, id, name, dir, decomp))
+    Outcome::result(replay_frames(ctx, id, name, dir, decomp, None))
 }
 
 /// The original's replay of the recording into `dir` (a PNG a tick, then
 /// `done.json` when it ran), as [`replay_child`] gives it.
-fn replay_frames(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -> crate::Result<Value> {
+fn replay_frames(
+    ctx: &Ctx,
+    id: &str,
+    name: &str,
+    dir: &Path,
+    decomp: bool,
+    only: Option<&BTreeSet<u64>>,
+) -> crate::Result<Value> {
     std::fs::create_dir_all(dir).map_err(|e| crate::Error::io(dir, e))?;
     let c = decomp.then(|| crate::decomp::Replacement::new(&ctx.root, &[])).transpose()?;
     let mut install = |m: &mut psx_core::Machine| {
@@ -1204,6 +1211,9 @@ fn replay_frames(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -> c
         name,
         Duration::from_secs(600),
         &mut |t, m| {
+            if only.is_some_and(|s| !s.contains(&t.tick)) {
+                return;
+            }
             let (w, h, rgba) = m.bus.gpu.display_rgba();
             let p = dir.join(format!("{}.png", t.tick));
             if let Err(e) = crate::run::write_png(&p, w, h, &rgba, png::ColorType::Rgba) {
@@ -1231,6 +1241,56 @@ fn replay_frames(ctx: &Ctx, id: &str, name: &str, dir: &Path, decomp: bool) -> c
     Ok(v)
 }
 
+/// What identifies the original's replay of a recording, for keeping its
+/// frames: changes with the recording, its scenario or the glossary.
+pub(crate) fn replay_key(root: &Path, id: &str, name: &str) -> Option<String> {
+    Some(replay_dir(root, id, name, false)?.file_name()?.to_string_lossy().into_owned())
+}
+
+/// The original's screens at `only` into `dir`, unless already there.
+pub(crate) fn sampled_original(
+    ctx: &Ctx,
+    id: &str,
+    name: &str,
+    only: &BTreeSet<u64>,
+    dir: &Path,
+) -> Result<(), String> {
+    if dir.join("done.json").is_file() {
+        return Ok(());
+    }
+    let v = replay_frames(ctx, id, name, dir, false, Some(only)).unwrap_or_else(|e| e.to_value());
+    match v.get("error") {
+        Some(e) => Err(e["message"].as_str().unwrap_or("the original's replay failed").to_string()),
+        None => Ok(()),
+    }
+}
+
+/// The port's screens at `only` into `dir`, drawn afresh. A port that
+/// stopped part way keeps what it drew, with why as the note.
+pub(crate) fn sampled_port(
+    root: &Path,
+    id: &str,
+    name: &str,
+    only: &BTreeSet<u64>,
+    dir: &Path,
+) -> Result<Option<String>, String> {
+    let _ = std::fs::remove_dir_all(dir);
+    let rec = root.join(crate::scenario::SCENARIOS).join(id).join(format!("{name}.jsonl"));
+    let process = crate::port::process::start(root)?;
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        psx_scenario::replay::run_sampled(process.port(), &rec, dir, only)
+    }));
+    if let Err(p) = run {
+        return Ok(Some(format!("the port panicked: {}", psx_scenario::runner::panic_message(&p))));
+    }
+    let frames = std::fs::read(dir.join("frames.json")).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    match frames {
+        Some(v) if v["no_screen"] == true => Err("the port draws no screen yet".into()),
+        Some(v) => Ok(v["error"].as_str().map(str::to_string)),
+        None => Ok(None),
+    }
+}
+
 /// `scenario show --screens`: the original's screen and the port's at
 /// each of `ticks`, copied into `out` as `<tick>-original.png` and
 /// `<tick>-port.png` from the frames psx web keeps (drawn first when they
@@ -1243,7 +1303,7 @@ pub(crate) fn screens(ctx: &Ctx, id: &str, name: &str, ticks: &[u64], out: &Path
         replay_dir(root, id, name, false).ok_or_else(|| crate::Error::invalid("no data directory for the replays"))?;
     if !original.join("done.json").is_file() {
         prune_replays(&original);
-        let v = replay_frames(ctx, id, name, &original, false).unwrap_or_else(|e| e.to_value());
+        let v = replay_frames(ctx, id, name, &original, false, None).unwrap_or_else(|e| e.to_value());
         if let Some(e) = v.get("error") {
             notes.insert("original".into(), e["message"].clone());
         }
