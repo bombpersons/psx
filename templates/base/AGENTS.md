@@ -21,8 +21,13 @@ recordings ran and the port cites, plays waiting or answered. psx's
 What to do next is yours to choose: say what you picked and why, and go
 where the person points when they do. Keep `STATUS.md` current. The person
 decides when it's done, by playing it; `scenario_play` asks them to play
-something, and it queues, so carry on with other work. When a piece is
-done, go on to the next unless the person has asked you to stop.
+something, and it queues, so carry on with other work.
+
+Take one thing per session: a recording's first difference, or one piece
+the person asked for. When it's done, or you've found its cause but can't
+fix it yet, commit, run `port_check`, write what you learned in `notes/`,
+update STATUS.md's "Next, and why" so a session that has never seen this
+work can start from it, and stop. The next session starts from STATUS.md.
 
 Ask the person for a play of the goal with `scenario_play` as soon as the
 first recordings work: one long play shows far more of the game than short

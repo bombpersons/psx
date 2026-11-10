@@ -26,8 +26,10 @@ first difference (the original's value and the port's there) and the code
 that wrote it; scenario_show port=true puts the port's values beside the
 original's. port_status is information.
 What to do next is the agent's to choose, saying what and why, and the
-person's to redirect; STATUS.md in the workspace says what is ported and
-checked, what is ported but not checked, what isn't ported and what's next.
+person's to redirect. A session takes one difference or piece and stops;
+the next starts from STATUS.md in the workspace, which says what is ported
+and checked, what is ported but not checked, what isn't ported and what's
+next.
 The person decides when it's done, by playing it. Without a workspace the
 same commands investigate a game: start with context.
 
