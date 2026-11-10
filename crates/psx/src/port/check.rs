@@ -40,16 +40,24 @@ pub struct RecordingRun {
     pub name: String,
     #[serde(default)]
     pub failures: Vec<String>,
-    /// Where each quantity first differs, for psx web's plot and the
-    /// pointer; never shown to the agent.
+    /// Where each quantity first differs, with the original's value and
+    /// the port's there: port_check gives the first, psx web plots them.
     #[serde(default)]
     pub differences: Vec<Difference>,
+    /// When a quantity differed: the port's compared quantities, initially
+    /// and after each tick (`scenario show --port`).
+    #[serde(default)]
+    pub values: Vec<BTreeMap<String, Value>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Difference {
     pub quantity: String,
     pub at: String,
+    #[serde(default)]
+    pub expected: Value,
+    #[serde(default)]
+    pub got: Option<Value>,
 }
 
 /// How long a check spends on its pointers, all together.
@@ -71,6 +79,53 @@ fn differences(r: &str, report: &ScenarioReport) -> Option<(Vec<String>, u64)> {
         }
     }
     Some((qs, at))
+}
+
+/// Where recording `r` first differs: the tick, each quantity differing
+/// there with the original's value and the port's, and when the others
+/// first differ. What a person reading the two side by side would see first.
+fn first_difference(r: &str, report: &ScenarioReport) -> Option<Value> {
+    let (id, name) = r.split_once('/')?;
+    let run = report.scenarios.iter().find(|s| s.id == id)?.recordings.iter().find(|x| x.name == name)?;
+    let mut ds: Vec<(u64, &Difference)> =
+        run.differences.iter().filter_map(|d| Some((super::pointer::tick_of(&d.at)?, d))).collect();
+    ds.sort_by_key(|(t, _)| *t);
+    let tick = ds.first()?.0;
+    let at: Vec<Value> = ds
+        .iter()
+        .filter(|(t, _)| *t == tick)
+        .map(|(_, d)| json!({"quantity": d.quantity, "original": d.expected, "port": d.got}))
+        .collect();
+    let later: Vec<Value> =
+        ds.iter().filter(|(t, _)| *t > tick).map(|(t, d)| json!({"quantity": d.quantity, "tick": t})).collect();
+    let mut v = json!({"tick": tick, "values": at});
+    if !later.is_empty() {
+        v["later"] = json!(later);
+    }
+    Some(v)
+}
+
+/// The port's values for recording `r` (`<scenario>/<name>`) from the last
+/// psx port check, with its commit: kept only where a quantity differed.
+pub(crate) fn port_values(root: &Path, r: &str) -> Result<(String, Vec<BTreeMap<String, Value>>), String> {
+    let last = std::fs::read(root.join(LAST))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .ok_or("no psx port check has run here")?;
+    let commit = last["commit"].as_str().unwrap_or("").to_string();
+    let report = serde_json::from_value::<ScenarioReport>(last["scenarios"].clone())
+        .map_err(|_| "the last psx port check ran no scenarios")?;
+    let (id, name) = r.split_once('/').ok_or("not <scenario>/<name>")?;
+    let run = report
+        .scenarios
+        .into_iter()
+        .find(|s| s.id == id)
+        .and_then(|s| s.recordings.into_iter().find(|x| x.name == name));
+    match run {
+        Some(x) if !x.values.is_empty() => Ok((commit, x.values)),
+        Some(_) => Err(format!("the last psx port check ({commit:.7}) kept no port values for {r}: it matched")),
+        None => Err(format!("the last psx port check ({commit:.7}) didn't run {r}")),
+    }
 }
 
 /// Each recording named, with what the scenario run found:
@@ -357,7 +412,17 @@ impl PortCheckArgs {
         }
         if let Some(r) = failing.first() {
             verdict["failing"] = json!(
-                failing.iter().take(10).map(|r| json!({"recording": r, "differs": results.get(r)})).collect::<Vec<_>>()
+                failing
+                    .iter()
+                    .take(10)
+                    .map(|r| {
+                        let mut f = json!({"recording": r, "differs": results.get(r)});
+                        if let Some(first) = ran.as_ref().ok().and_then(|rep| first_difference(r, rep)) {
+                            f["first"] = first;
+                        }
+                        f
+                    })
+                    .collect::<Vec<_>>()
             );
             if let Some(p) = v.pointers.get(r) {
                 verdict["pointer"] = p.clone();
@@ -408,6 +473,22 @@ impl Op for PortCheckArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_difference_gives_both_values_and_when_the_rest_differ() {
+        let report: ScenarioReport = serde_json::from_value(json!({"scenarios": [{"id": "level", "recordings": [
+            {"name": "route", "failures": ["differs"], "differences": [
+                {"quantity": "x", "at": "tick 92", "expected": 559, "got": 484},
+                {"quantity": "camera_x", "at": "tick 95", "expected": 10, "got": 12},
+                {"quantity": "facing", "at": "tick 92", "expected": 7, "got": null}]}]}]}))
+        .unwrap();
+        let first = first_difference("level/route", &report).unwrap();
+        assert_eq!(first["tick"], 92);
+        assert_eq!(first["values"][0], json!({"quantity": "x", "original": 559, "port": 484}));
+        assert_eq!(first["values"][1]["port"], Value::Null);
+        assert_eq!(first["later"], json!([{"quantity": "camera_x", "tick": 95}]));
+        assert_eq!(first_difference("level/other", &report), None);
+    }
 
     #[test]
     fn each_named_recording_gets_what_the_run_found() {

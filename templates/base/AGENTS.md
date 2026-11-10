@@ -10,7 +10,9 @@ backed by that evidence.
 
 `goal.toml` says what the person wants. The recordings of the original
 say what's right: `port_check` replays them against the port and gives,
-for each, the first difference and the code that wrote the value. Passing
+for each, the first difference (the original's value and the port's) and
+the code that wrote the value; `scenario_show` with `port=true` puts the
+port's values beside the original's around it. Passing
 them is the test. `port_status` is information: what passes, what the
 recordings ran and the port cites, plays waiting or answered. psx's
 `guide` tool is the reference for the commands. psx writes
@@ -26,14 +28,20 @@ Ask the person for a play of the goal with `scenario_play` as soon as the
 first recordings work: one long play shows far more of the game than short
 recordings you make yourself.
 
-When you reach something the original holds as a value (a camera, the
-animation playing, a score), add it to `glossary/` and to the scenarios'
-`[compare]` as soon as it can be measured, and refresh the recordings, so
-`port_check` compares it from then on. Samples of your own are for
-exploring and don't replace that. A recording that starts failing because
-of it has found work to do. A value you only need while tracing a rule can
-be compared while you do; what stays compared should be what the player
-sees or what the game's rules depend on.
+Recordings compare what a player could notice: where things are and which
+way they face, what's drawn (the camera, the animation playing and its
+frame, the model or sprite shown), and what the game shows or plays (the
+HUD's numbers, a sound starting). Add each to `glossary/` and the
+scenarios' `[compare]` as soon as it can be measured, and refresh the
+recordings, so `port_check` compares it from then on. A recording that
+starts failing because of it has found work to do.
+
+The original's counters, timers, flags, phases and script variables are
+how it gets there, not what the port must match, so they aren't compared:
+the port can reach the same results its own way. To learn a rule, watch
+them in the original (debugger watches, the `ram_*` tools) while you trace,
+then check what you wrote through what a player could notice. When unsure,
+ask whether a player could tell the difference by watching and listening.
 
 Commit as you go and run `port_check` on the commits. It judges only a
 commit with no uncommitted changes, and `cargo test` doesn't change what

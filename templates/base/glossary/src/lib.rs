@@ -6,8 +6,11 @@
 //! with a line `Unit: …` for its unit. Scenarios compare them by name
 //! (`scenarios/<id>.toml`, `[compare]`).
 //!
-//! Screens are not compared: what drawing does that can be checked is a
-//! quantity like any other (the camera's position and angle, the animation
-//! playing and its frame, the model or sprite shown, the HUD's numbers).
+//! A quantity is something a player could notice by watching or listening:
+//! where things are and which way they face, what's drawn (the camera, the
+//! animation playing and its frame, the model or sprite shown) and what the
+//! game shows or plays (the HUD's numbers, a sound starting). The original's
+//! counters, timers, flags and script variables are not quantities: the port
+//! may reach the same results its own way. Screens are not compared.
 
 pub struct Quantities {}

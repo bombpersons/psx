@@ -22,7 +22,9 @@ loop; the region comes from the disc. Its AGENTS.md says what the port's
 code is held to; this guide says how the work goes.
 
 In a workspace, port_check is the test: each recording passes, or gives its
-first difference and the code that wrote it. port_status is information.
+first difference (the original's value and the port's there) and the code
+that wrote it; scenario_show port=true puts the port's values beside the
+original's. port_status is information.
 What to do next is the agent's to choose, saying what and why, and the
 person's to redirect; STATUS.md in the workspace says what is ported and
 checked, what is ported but not checked, what isn't ported and what's next.
@@ -74,7 +76,9 @@ drivers.
 ## Recordings
 
 The glossary (glossary/src/lib.rs) names the quantities a scenario
-compares, in game terms:
+compares, in game terms: what a player could notice (where things are,
+what's drawn, what the game shows or plays), never the original's counters,
+timers, flags or script variables, which the port may handle its own way:
 
   pub struct Quantities {
       /// The player's position across the level

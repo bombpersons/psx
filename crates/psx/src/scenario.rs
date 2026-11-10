@@ -1593,6 +1593,11 @@ pub struct ScenarioShowArgs {
     #[arg(long)]
     #[serde(default)]
     pub screens: bool,
+    /// The port's values beside the original's, from the last port check
+    /// (kept where a recording differed).
+    #[arg(long)]
+    #[serde(default)]
+    pub port: bool,
 }
 
 /// How many screens `show --screens` gives, spread over the ticks shown.
@@ -1693,6 +1698,15 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
     }
     let (lo, hi) = a.ticks.as_deref().map(tick_range).transpose()?.unwrap_or((0, u64::MAX));
 
+    let port = if a.port {
+        let (commit, values) =
+            crate::port::check::port_values(&ctx.root, &format!("{}/{}", a.id, a.name)).map_err(Error::invalid)?;
+        let values: Vec<psx_scenario::Values> =
+            values.into_iter().map(|m| serde_json::from_value(json!(m)).unwrap_or_default()).collect();
+        Some((commit, values))
+    } else {
+        None
+    };
     let initial = Full { values: rec.header.initial.clone(), ..Full::default() };
     let full = rec.expand();
     let ticks = full.len() as u64;
@@ -1704,6 +1718,9 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
     }
     for n in &names {
         columns.push(json!(n));
+        if port.is_some() {
+            columns.push(json!(format!("port:{n}")));
+        }
         if moves(&types[n], a.raw) {
             columns.push(json!(format!("Δ{n}")));
         }
@@ -1721,6 +1738,10 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
                 let t = &types[n];
                 let v = f.values.get(n);
                 row.push(v.map(|v| shown(t, v, a.raw)).unwrap_or(Json::Null));
+                if let Some((_, values)) = &port {
+                    let p = values.get(f.tick as usize).and_then(|m| m.get(n));
+                    row.push(p.map(|p| shown(t, p, a.raw)).unwrap_or(Json::Null));
+                }
                 if moves(t, a.raw) {
                     let d = match (prev.values.get(n), v) {
                         (Some(p), Some(v)) if f.tick > 0 => delta(t, p, v, a.raw),
@@ -1756,6 +1777,11 @@ fn show_cmd(ctx: &Ctx, a: &ScenarioShowArgs) -> crate::Result<Json> {
     }
     if !units.is_empty() {
         out["units"] = Json::Object(units);
+    }
+    if let Some((commit, _)) = &port {
+        out["port"] = json!(format!(
+            "port:<quantity> is the port's value after that tick, from the last psx port check ({commit:.7})"
+        ));
     }
     if a.text {
         out["text"] = json!(table(&out));
@@ -2848,6 +2874,7 @@ pub struct Quantities {
             raw,
             text: true,
             screens: false,
+            port: false,
         };
         let out = show_cmd(&ctx, &args(None, false)).unwrap();
         assert_eq!(out["columns"], json!(["tick", "field", "pad", "m", "n", "Δn", "x", "Δx"]));
