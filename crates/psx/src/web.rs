@@ -940,7 +940,7 @@ fn replay(st: &State, root: &Path, id: &str, name: &str, start: bool, decomp: bo
             let (root, id, name, job) = (root.to_path_buf(), id.to_string(), name.to_string(), job.clone());
             std::thread::spawn(move || {
                 let dir = job.lock().unwrap().dir.clone();
-                let out = std::env::current_exe().and_then(|exe| {
+                let out = crate::self_exe().and_then(|exe| {
                     std::process::Command::new(exe)
                         .arg("--root")
                         .arg(&root)
