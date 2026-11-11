@@ -34,6 +34,27 @@ pub fn set(root: &Path, rec: &str, on: bool) -> crate::Result<Vec<String>> {
         return Err(Error::invalid(format!("{rec}: no such recording under {SCENARIOS}/")));
     }
     let mut held_out = goal.held_out;
+    // A work recording that starts inside it shows the agent what it holds.
+    // So does one that starts inside one of those, which runs it first.
+    let mut inside: Vec<String> = Vec::new();
+    let mut next = if on { vec![name.to_string()] } else { Vec::new() };
+    while let Some(n) = next.pop() {
+        for r in starting_in(root, scenario, &n) {
+            if !inside.contains(&r) {
+                next.push(r.split_once('/').map_or(r.clone(), |(_, n)| n.to_string()));
+                inside.push(r);
+            }
+        }
+    }
+    inside.sort();
+    let inside: Vec<String> = inside.into_iter().filter(|r| !held_out.contains(r)).collect();
+    if !inside.is_empty() {
+        return Err(Error::invalid(format!(
+            "{rec}: {} start inside it (from), so holding it out would still show the agent part of it: delete them, or keep it a work recording",
+            inside.join(", ")
+        ))
+        .with("starting_inside", json!(inside)));
+    }
     let had = held_out.iter().any(|r| r == rec);
     match (on, had) {
         (true, false) => held_out.push(rec.to_string()),
@@ -44,6 +65,30 @@ pub fn set(root: &Path, rec: &str, on: bool) -> crate::Result<Vec<String>> {
     let text = super::migrate::set_key(&text, "held_out", (!held_out.is_empty()).then_some(&plays));
     std::fs::write(&path, text).map_err(|e| Error::io(&path, e))?;
     Ok(held_out)
+}
+
+/// The scenario's recordings that start inside `name` (their `from`), as
+/// `scenario/name`.
+fn starting_in(root: &Path, scenario: &str, name: &str) -> Vec<String> {
+    use std::io::BufRead;
+    let dir = root.join(SCENARIOS).join(scenario);
+    let mut out: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .filter(|p| {
+            let mut first = String::new();
+            let read = std::fs::File::open(p).map(|f| std::io::BufReader::new(f).read_line(&mut first));
+            let header = read.ok().and_then(|_| serde_json::from_str::<Value>(&first).ok());
+            let from = header.as_ref().and_then(|h| h["producer"]["details"]["from"].as_str());
+            from.and_then(|f| psx_scenario::scenario::Continues::parse(f).ok()).is_some_and(|c| c.recording == name)
+        })
+        .filter_map(|p| Some(format!("{scenario}/{}", p.file_stem()?.to_string_lossy())))
+        .collect();
+    out.sort();
+    out
 }
 
 /// Why the agent's call of `tool` with `args` is refused: it names a
@@ -135,6 +180,25 @@ mod tests {
         assert!(set(root, "walk/gone", true).is_err());
         assert!(set(root, "walk/play", false).unwrap().is_empty());
         assert!(!std::fs::read_to_string(root.join(GOAL)).unwrap().contains("\nheld_out = ["));
+    }
+
+    /// A work recording that starts inside a play keeps it from being held
+    /// out: it would still show the agent part of the play.
+    #[test]
+    fn a_play_others_start_inside_is_not_held_out() {
+        let d = workspace();
+        let root = d.0.as_path();
+        let header = |from: &str| format!("{{\"producer\": {{\"name\": \"psx\", \"details\": {{\"from\": \"{from}\"}}}}}}\n");
+        std::fs::write(root.join("scenarios/walk/near.jsonl"), header("play@24")).unwrap();
+        std::fs::write(root.join("scenarios/walk/after.jsonl"), header("short")).unwrap();
+        std::fs::write(root.join("scenarios/walk/later.jsonl"), header("near")).unwrap();
+        let e = set(root, "walk/play", true).unwrap_err();
+        assert!(e.message.starts_with("walk/play: walk/later, walk/near start inside it"), "{}", e.message);
+        std::fs::remove_file(root.join("scenarios/walk/later.jsonl")).unwrap();
+        assert!(listed(root).is_empty());
+        // Once it is gone, the play is held out.
+        std::fs::remove_file(root.join("scenarios/walk/near.jsonl")).unwrap();
+        assert_eq!(set(root, "walk/play", true).unwrap(), ["walk/play"]);
     }
 
     #[test]
