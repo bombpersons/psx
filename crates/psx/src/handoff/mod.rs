@@ -22,6 +22,7 @@
 //! `scenario play --status` reports where it stands and the answer.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use psx_core::Machine;
@@ -392,7 +393,7 @@ pub fn child(ctx: &Ctx, dir: &Path) -> Outcome {
 pub fn answer(ctx: &Ctx, dir: &Path, by: &str) -> crate::Result<(bool, Value)> {
     can_open_window()?;
     let (a, text) = claim(dir, by)?;
-    Ok(run(ctx, a, &text, dir, play))
+    Ok(run(ctx, a, &text, dir, play, &|_| {}))
 }
 
 /// Claim a queued request: its arguments and the text the person reads.
@@ -836,20 +837,38 @@ fn latch_tick(ctx: &Ctx) -> crate::Result<crate::binding::Tick> {
     Ok(b.described().tick.clone())
 }
 
+/// What the person sees of work after (or before) the play: the browser's
+/// page, or nothing.
+type Shown<'a> = &'a (dyn Fn(&Value) + Sync);
+
 /// Run `f` while keeping `live.json` fresh with `state`, so the status
-/// keeps waiting through work that takes a while.
-fn alive<T>(dir: &Path, state: &str, f: impl FnOnce() -> T) -> T {
-    let stop = std::sync::atomic::AtomicBool::new(false);
+/// keeps waiting through work that takes a while, and showing it. With
+/// `fields`, `f` counts the fields it has run in the counter it is given,
+/// and the status says how far it is and about how long is left.
+fn alive<T>(dir: &Path, state: &str, fields: u64, shown: Shown, f: impl FnOnce(&AtomicU64) -> T) -> T {
+    let (stop, done) = (AtomicBool::new(false), AtomicU64::new(0));
+    let started = std::time::Instant::now();
     std::thread::scope(|sc| {
         sc.spawn(|| {
-            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let v = json!({"status": state, "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
+            while !stop.load(Ordering::Relaxed) {
+                let mut v = json!({"status": state, "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
+                if fields > 0 {
+                    let n = done.load(Ordering::Relaxed).min(fields);
+                    v["field"] = json!(n);
+                    v["fields"] = json!(fields);
+                    // From the rate so far, once there is one.
+                    let secs = started.elapsed().as_secs_f64();
+                    if n > 0 && secs > 5.0 {
+                        v["left_s"] = json!(((fields - n) as f64 * secs / n as f64).round() as u64);
+                    }
+                }
                 let _ = crate::write_atomic(&dir.join("live.json"), v.to_string().as_bytes());
+                shown(&v);
                 std::thread::sleep(Duration::from_millis(500));
             }
         });
-        let r = f();
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let r = f(&done);
+        stop.store(true, Ordering::Relaxed);
         r
     })
 }
@@ -864,10 +883,12 @@ fn record_play(
     events: &[Input],
     frames: u64,
     end_state: &[u8],
+    done: &AtomicU64,
 ) -> crate::Result<Value> {
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
     let description = a.description.clone().or_else(|| Some(a.request.clone()));
-    let (ok, mut v) = p.write(ctx, &mut b.m, frames as u32, events, description, RECORD_TIMEOUT)?;
+    let mut on_tick = |t: &psx_scenario::scenario::Full, _: &Machine| done.store(t.field, Ordering::Relaxed);
+    let (ok, mut v) = p.write(ctx, &mut b.m, frames as u32, events, description, RECORD_TIMEOUT, Some(&mut on_tick))?;
     if ok && a.held_out {
         let rec = format!("{}/{}", p.id, p.name);
         crate::port::held_out::set(&ctx.root, &rec, true)?;
@@ -889,17 +910,18 @@ fn record_play(
 /// there as an error so `scenario play --status` can return it. A window
 /// closed without an answer, or one that could not open, gives the request
 /// back to the queue instead. `play` is where the person plays: the window,
-/// or the browser.
+/// or the browser, which `shown` tells of the work after the play.
 fn run(
     ctx: &Ctx,
     mut a: HandoffArgs,
     text: &str,
     dir: &Path,
     play: impl FnOnce(&mut Session, &str, &Path) -> Result<(End, String), String>,
+    shown: Shown,
 ) -> (bool, Value) {
     let result = (|| -> crate::Result<Value> {
         let (mut s, scenario) = match a.id {
-            Some(_) => alive(dir, "starting", || scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?,
+            Some(_) => alive(dir, "starting", 0, &|_| {}, |_| scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?,
             None => {
                 let mut s = start(&a)?;
                 if let Some((set, tick)) = power_on_adjust(ctx, &a)? {
@@ -929,6 +951,7 @@ fn run(
         // The person is done; keep the status from calling this abandoned while
         // the files are written (and verify replays, which can take minutes).
         s.write_live(dir, "finishing");
+        shown(&json!({"status": "finishing"}));
         let (events, frames) = (s.events.clone(), s.rel());
         let state = s.run.m.save_state(s.media_id.clone());
         let adjust = s.adjustments();
@@ -937,7 +960,7 @@ fn run(
             v["adjust"] = json!(adjust);
         }
         if let Some(p) = scenario {
-            scenario_report(ctx, &a, &p, &mut v, end, &events, frames, &state, dir);
+            scenario_report(ctx, &a, &p, &mut v, end, &events, frames, &state, dir, shown);
         }
         Ok(v)
     })();
@@ -969,6 +992,7 @@ fn scenario_report(
     frames: u64,
     state: &[u8],
     dir: &Path,
+    shown: Shown,
 ) {
     let mut args = json!({"id": p.id, "name": p.name, "frames": frames, "replay": dir.join("input.json"),
         "description": a.description.clone().unwrap_or_else(|| a.request.clone())});
@@ -997,7 +1021,8 @@ fn scenario_report(
         ));
     }
     v["recording"] = if end == End::Done {
-        alive(dir, "recording", || record_play(ctx, a, p, events, frames, state)).unwrap_or_else(|e| e.to_value())
+        alive(dir, "recording", frames, shown, |done| record_play(ctx, a, p, events, frames, state, done))
+            .unwrap_or_else(|e| e.to_value())
     } else {
         args["replace"] = json!(a.replace);
         json!({"written": false, "note": "the person did not finish, so the play is not recorded: ask again, or record what they did with scenario_record and these arguments",
@@ -1370,7 +1395,7 @@ mod tests {
         let (events, frames) = (s.events.clone(), s.rel());
         let state = s.run.m.save_state(s.media_id.clone());
         let mut v = finish(&a, s, End::Done, String::new(), &dir).unwrap();
-        scenario_report(&ctx, &a, &p, &mut v, End::Done, &events, frames, &state, &dir);
+        scenario_report(&ctx, &a, &p, &mut v, End::Done, &events, frames, &state, &dir, &|_| {});
         assert_eq!(v["recording"]["matches_play"], true, "{}", v["recording"]);
         let at = |name: &str| ctx.root.join("scenarios").join(&id).join(name);
         let read = |name: &str| {

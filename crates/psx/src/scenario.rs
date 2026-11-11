@@ -801,7 +801,9 @@ impl Prepared {
     }
 
     /// Record `frames` fields of `events` on `m` (where [`Prepared::start`]
-    /// left it) and write the recording and its coverage.
+    /// left it) and write the recording and its coverage; `on_tick` sees
+    /// each tick as it is recorded.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn write(
         &self,
         ctx: &Ctx,
@@ -810,11 +812,12 @@ impl Prepared {
         events: &[crate::replay::Input],
         description: Option<String>,
         timeout: Duration,
+        on_tick: Option<OnTick<'_>>,
     ) -> crate::Result<(bool, Json)> {
         let root = &ctx.root;
         let mut cover =
             Cover { tracer: tracer(m), scripts: crate::script_cover::Scripts::new(&self.b.described().hooks) };
-        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover), None, None);
+        let r = record(m, &self.quantities(), frames, events, None, timeout, Some(&mut cover), on_tick, None);
         if let Some(why) = unrecorded(&r) {
             return Ok((false, why));
         }
@@ -935,7 +938,7 @@ fn record_cmd(ctx: &Ctx, a: ScenarioRecordArgs) -> crate::Result<(bool, Json)> {
     }
     let timeout = Duration::from_secs(a.timeout);
     let mut b = p.start(ctx, timeout)?;
-    p.write(ctx, &mut b.m, a.frames, &events, a.description.clone(), timeout)
+    p.write(ctx, &mut b.m, a.frames, &events, a.description.clone(), timeout, None)
 }
 
 impl Op for ScenarioRecordArgs {

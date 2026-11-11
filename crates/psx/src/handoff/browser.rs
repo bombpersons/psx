@@ -96,7 +96,14 @@ impl Live {
             .spawn(move || {
                 let ctx = Ctx { root, cancel: None };
                 let (person, with_c) = (a.person, a.with_c);
-                let (_, v) = super::run(&ctx, a, &text, &dir, |s, text, dir| play(s, text, dir, &l));
+                // The work after the play (the recording replays it, which takes a
+                // while): the page shows how far it is instead of a still game.
+                let shown = |w: &Value| {
+                    if w["status"] != "starting" {
+                        l.set_status(json!({"state": "finishing", "request": text, "work": w}));
+                    }
+                };
+                let (_, v) = super::run(&ctx, a, &text, &dir, |s, text, dir| play(s, text, dir, &l), &shown);
                 // The person's own play left without an answer is gone, not queued for someone; a try always is.
                 if with_c || person && v["status"] == "queued" {
                     let _ = std::fs::remove_dir_all(&dir);

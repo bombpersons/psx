@@ -1640,7 +1640,7 @@ function playerStatus(P, st) {
   const was = P.status.state;
   P.status = {...P.status, ...st};
   if (st.state === "ended") { P.ended = true; P.abort.abort(); loadRequests().then(() => tabs()); }
-  if (st.state !== was || st.state === "ended" || st.state === "lost" || (st.message_seq ?? -1) !== P.msgSeq || st.labelling !== P.labelShown) playerView();
+  if (st.state !== was || st.state === "ended" || st.state === "lost" || st.state === "finishing" || (st.message_seq ?? -1) !== P.msgSeq || st.labelling !== P.labelShown) playerView();
   else playerLine(P);
 }
 function playerLine(P) {
@@ -1665,6 +1665,15 @@ function playerView() {
       : `Answered: ${esc(a.status)}${a.recording ? ` · recording ${a.recording.written === false ? "not written" : esc(a.recording.status || a.recording.name || "written")}` : ""}.`;
     v.innerHTML = `<div class="card"><div class="what" style="white-space:pre-wrap">${esc(req)}</div><p>${what}</p><button class="b primary" id="pback">Back to requests</button></div>`;
     $("#pback").onclick = () => { stopPlayer(); requestsView(); };
+    return;
+  }
+  // The play is over and psx is at work on it: a recording replays the
+  // whole play, which takes a while.
+  if (st.state === "finishing") {
+    const w = st.work || {}, rec = w.status === "recording" && w.fields;
+    const what = rec ? `Recording your play: psx plays your input again from the start, as <span class="mono">scenario record</span> does. Field ${num(w.field)} of ${num(w.fields)}${w.left_s != null ? `, about ${fmtMs(w.left_s * 1000)} left` : ""}.`
+      : w.status === "recording" ? "Recording your play: psx plays your input again from the start." : "Saving your play…";
+    v.innerHTML = `<div class="card"><div class="what" style="white-space:pre-wrap">${esc(req)}</div><p>${what}</p>${rec ? `<div class="bar" style="height:8px"><i style="width:${pct(w.field, w.fields)}%"></i></div>` : ""}<p class="quiet">Leaving this page does not stop it: the recording shows under Recordings when it is done.</p></div>`;
     return;
   }
   const B = S.bindings || {keyboard: {}, gamepad: {}};
