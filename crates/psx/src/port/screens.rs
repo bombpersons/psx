@@ -84,7 +84,7 @@ fn at_tick(original: &Path, port: &Path, tick: u64) -> Option<f64> {
 
 fn score_one(ctx: &Ctx, recording: &str, key: &str) -> Result<Value, String> {
     let (id, name) = recording.split_once('/').ok_or("not <scenario>/<name>")?;
-    let ticks = samples(super::next::last_tick(&ctx.root, recording));
+    let ticks = samples(super::status::last_tick(&ctx.root, recording));
     if ticks.is_empty() {
         return Err("no ticks".into());
     }
@@ -124,7 +124,7 @@ pub fn score(ctx: &Ctx, work: &[String], commit: Option<&str>, clean: bool) -> c
         }
     }
     let mut order = keyed;
-    order.sort_by_key(|(r, _)| super::next::last_tick(&ctx.root, r));
+    order.sort_by_key(|(r, _)| super::status::last_tick(&ctx.root, r));
     let started = Instant::now();
     let (mut scored, mut not_scored) = (Vec::new(), serde_json::Map::new());
     for (r, key) in &order {

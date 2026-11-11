@@ -1,11 +1,14 @@
-//! `port update` moving a workspace from features to the goal's recordings:
-//! each `catalogue/F-*.md` entry's questions go to `catalogue/questions.md`,
-//! its wont_reach to `catalogue/wont_reach.toml`, its assets to the
-//! scenarios its recordings are of, and its held-out recordings the person
-//! played to goal.toml's `held_out`; the agent's own become work. The
-//! script stretches its code cited that the port's code does not go to
-//! `game/script_stretches.md`, so they stay cited. goal.toml loses
-//! `features`, and the entries and `.psx/goal_recordings.json` go.
+//! `port update` moving a workspace to the current form. From features:
+//! each `catalogue/F-*.md` entry's assets go to the scenarios its
+//! recordings are of, and its held-out recordings the person played to
+//! goal.toml's `held_out`; the agent's own become work. The script stretches
+//! its code cited that the port's code does not go to
+//! `game/script_stretches.md`, so they stay cited. From when psx decided
+//! when a goal was done: the entries' and `catalogue/questions.md`'s
+//! questions, and the entries' and `catalogue/wont_reach.toml`'s branches no
+//! recording reaches, go to STATUS.md. goal.toml loses `features` and
+//! `confirmed`; the entries, those two files, `.psx/goal_recordings.json`
+//! and `port next`'s `.psx/port/next.json` go.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -13,7 +16,7 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{CATALOGUE, Confirmed, GOAL, Goal, QUESTIONS, SCENARIOS, WONT_REACH};
+use super::{CATALOGUE, GOAL, Goal, QUESTIONS, SCENARIOS, STATUS, WONT_REACH};
 use crate::Error;
 use crate::script_cover::Stretch;
 
@@ -22,6 +25,12 @@ const STRETCHES: &str = "game/script_stretches.md";
 
 /// The ledger of recordings features named, from before.
 const GOAL_RECORDINGS: &str = ".psx/goal_recordings.json";
+
+/// `port next`'s loop guard, from before.
+const GUARD: &str = ".psx/port/next.json";
+
+/// STATUS.md as `port init` writes it.
+const STATUS_MD: &str = include_str!("../../../../templates/base/STATUS.md");
 
 /// A feature's entry as it was: only what moves is read.
 #[derive(Debug, Default, Deserialize)]
@@ -92,8 +101,8 @@ fn write(root: &Path, rel: &str, text: &str) -> crate::Result<()> {
     crate::write_atomic(&p, text.as_bytes()).map_err(|e| Error::io(&p, e))
 }
 
-/// Move the workspace at `root` off features; what moved, or null when
-/// there was nothing to move. `dry_run` writes nothing.
+/// Move the workspace at `root` to the current form; what moved, or null
+/// when there was nothing to move. `dry_run` writes nothing.
 pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     let Some(goal_text) = read(root, GOAL)? else { return Ok(Value::Null) };
     let goal: Goal = toml::from_str(&goal_text).map_err(|e| Error::invalid(format!("{GOAL}: {}", e.message())))?;
@@ -104,8 +113,8 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     files.retain(|n| n.starts_with("F-") && n.ends_with(".md"));
     files.sort();
     let ledger = root.join(GOAL_RECORDINGS).is_file();
-    let confirmed_features = goal.confirmed.as_ref().is_some_and(|c| c.features.is_some());
-    if files.is_empty() && goal.features.is_none() && !ledger && !confirmed_features {
+    let old: Vec<&str> = [WONT_REACH, QUESTIONS, GUARD].into_iter().filter(|f| root.join(f).is_file()).collect();
+    if files.is_empty() && goal.features.is_none() && goal.confirmed.is_none() && !ledger && old.is_empty() {
         return Ok(Value::Null);
     }
     // The goal's entries move; one outside it (not listed) goes with
@@ -138,7 +147,13 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     {
         played.extend(l.into_iter().filter(|(_, k)| k == "held_out").map(|(r, _)| r));
     }
-    let confirmed_plays: Vec<String> = goal.confirmed.as_ref().and_then(|c| c.held_out.clone()).unwrap_or_default();
+    let confirmed_plays: Vec<String> = goal
+        .confirmed
+        .as_ref()
+        .and_then(|c| c.get("held_out"))
+        .and_then(|h| h.as_array())
+        .map(|a| a.iter().filter_map(|r| r.as_str().map(String::from)).collect())
+        .unwrap_or_default();
     let mut held_out = goal.held_out.clone();
     let mut to_work = Vec::new();
     for r in entries.iter().flat_map(|(_, e)| &e.recordings.held_out) {
@@ -155,7 +170,9 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
         Some(t) => toml::from_str(&t).map_err(|e| Error::invalid(format!("{WONT_REACH}: {}", e.message())))?,
         None => BTreeMap::new(),
     };
-    let mut questions: Vec<String> = Vec::new();
+    let mut questions: Vec<String> = read(root, QUESTIONS)?
+        .map(|t| t.lines().filter_map(|l| l.trim().strip_prefix("- ").map(|q| q.trim().to_string())).collect())
+        .unwrap_or_default();
     let mut assets: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (_, e) in &entries {
         for (k, why) in &e.wont_reach {
@@ -185,6 +202,7 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     }
     let out = json!({
         "entries_removed": files,
+        "removed": old,
         "outside_the_goal": outside,
         "questions": questions.len(),
         "wont_reach": wont_reach.len(),
@@ -196,8 +214,8 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     if dry_run {
         return Ok(out);
     }
-    // goal.toml: no features, the person's plays held out and confirmed.
-    let mut text = set_key(&goal_text, "features", None);
+    // goal.toml: no features or confirmation, the person's plays held out.
+    let mut text = set_key(&set_key(&goal_text, "features", None), "confirmed", None);
     // The opening comment, when it tells of features, becomes the template's.
     let head = text.lines().take_while(|l| l.trim_start().starts_with('#')).count();
     if text.lines().take(head).any(|l| l.contains("feature")) {
@@ -207,20 +225,10 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     }
     let plays = toml::Value::from(held_out.clone());
     text = set_key(&text, "held_out", (!held_out.is_empty()).then_some(&plays));
-    if let Some(c) = &goal.confirmed {
-        let c = Confirmed {
-            features: None,
-            held_out: Some(
-                held_out.iter().filter(|r| confirmed_plays.contains(r) || played.contains(r)).cloned().collect(),
-            ),
-            ..c.clone()
-        };
-        text = super::confirm::with_confirmation(&text, &c);
-    }
     let check: Goal =
         toml::from_str(&text).map_err(|e| Error::invalid(format!("{GOAL} rewritten unreadably: {}", e.message())))?;
-    if check.features.is_some() || check.held_out != held_out {
-        return Err(Error::invalid(format!("{GOAL}: could not take features out; nothing written")));
+    if check.features.is_some() || check.confirmed.is_some() || check.held_out != held_out {
+        return Err(Error::invalid(format!("{GOAL}: could not take features and confirmed out; nothing written")));
     }
     for (s, names) in &assets {
         let rel = format!("{SCENARIOS}/{s}.toml");
@@ -235,23 +243,25 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
         all.extend(names.iter().filter(|n| !all.contains(n)).cloned().collect::<Vec<_>>());
         write(root, &rel, &set_key(&t, "assets", Some(&toml::Value::from(all))))?;
     }
-    if !wont_reach.is_empty() {
-        let mut t = String::from(
-            "# Branches of the code to port no recording can reach, by address, range or\n# test as port next gives it, each with why; the person confirms them.\n",
-        );
-        t += &toml::to_string(&wont_reach).map_err(|e| Error::invalid(e.to_string()))?;
-        write(root, WONT_REACH, &t)?;
-    }
-    if !questions.is_empty() {
-        let mut t = read(root, QUESTIONS)?
-            .unwrap_or_else(|| "# Open questions about the original, one per `- ` line.\n\n".into());
+    if !wont_reach.is_empty() || !questions.is_empty() {
+        let mut t = read(root, STATUS)?.unwrap_or_else(|| STATUS_MD.into());
         if !t.ends_with('\n') {
             t.push('\n');
         }
-        for q in &questions {
-            t += &format!("- {}\n", q.split_whitespace().collect::<Vec<_>>().join(" "));
+        let line = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !questions.is_empty() {
+            t += "\n## Open questions\n\nMoved here from catalogue/questions.md by psx port update.\n\n";
+            for q in &questions {
+                t += &format!("- {}\n", line(q));
+            }
         }
-        write(root, QUESTIONS, &t)?;
+        if !wont_reach.is_empty() {
+            t += "\n## Branches no recording reaches\n\nMoved here from catalogue/wont_reach.toml by psx port update.\n\n";
+            for (k, why) in &wont_reach {
+                t += &format!("- {k}: {}\n", line(why));
+            }
+        }
+        write(root, STATUS, &t)?;
     }
     if !stretches.is_empty() {
         let mut t = String::from(
@@ -269,16 +279,20 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     if read(root, "catalogue/README.md")?.is_some_and(|t| t.contains("F-0001.md")) {
         write(root, "catalogue/README.md", super::init::CATALOGUE_README)?;
     }
-    let old = "A feature's entry names the assets its\nrecordings need";
-    if let Some(t) = read(root, "formats/README.md")?.filter(|t| t.contains(old)) {
-        write(root, "formats/README.md", &t.replace(old, "A scenario's toml names the assets its\nrecordings need"))?;
+    let readme = "A feature's entry names the assets its\nrecordings need";
+    if let Some(t) = read(root, "formats/README.md")?.filter(|t| t.contains(readme)) {
+        write(
+            root,
+            "formats/README.md",
+            &t.replace(readme, "A scenario's toml names the assets its\nrecordings need"),
+        )?;
     }
     for rel in entries.iter().map(|(r, _)| r).chain(&outside) {
         let p = root.join(rel);
         std::fs::remove_file(&p).map_err(|e| Error::io(&p, e))?;
     }
-    if ledger {
-        let p = root.join(GOAL_RECORDINGS);
+    for rel in old.iter().copied().chain(ledger.then_some(GOAL_RECORDINGS)) {
+        let p = root.join(rel);
         std::fs::remove_file(&p).map_err(|e| Error::io(&p, e))?;
     }
     Ok(out)
@@ -317,14 +331,12 @@ mod tests {
         assert!(port.problems.iter().all(|p| p.problem.contains("no inventory")), "{:?}", port.problems);
         assert_eq!(port.recordings.work, ["walk/a", "walk/b"]);
         assert_eq!(port.recordings.held_out, ["walk/c", "walk/d"]);
-        assert_eq!(port.questions, ["what is the slope limit?"]);
-        assert_eq!(port.wont_reach["0x80010010"], "debug only");
-        // The entry's script stretch is still cited, so its position is fine.
+        let status = std::fs::read_to_string(d.0.join(STATUS)).unwrap();
+        assert!(status.starts_with("# Status") && status.contains("- what is the slope limit?\n"), "{status}");
+        assert!(status.contains("- 0x80010010: debug only\n") && status.contains("- croc+0x18: never\n"), "{status}");
         assert_eq!(out["script_stretches"], json!(["croc+0x10..0x20"]));
         assert!(std::fs::read_to_string(d.0.join(STRETCHES)).unwrap().contains("- croc+0x10..0x20\n"));
-        assert!(port.wont_reach_agreed("0x80010010", "debug only"));
         assert_eq!(port.scenario_assets["walk"], ["/CROC.WAD"]);
-        assert!(matches!(port.confirmation(), super::super::Confirmation::Covers { .. }));
         let text = std::fs::read_to_string(d.0.join(GOAL)).unwrap();
         assert!(
             text.starts_with(super::super::GOAL_TOML.lines().next().unwrap()) && !text.contains("feature"),
@@ -333,6 +345,36 @@ mod tests {
         assert!(!std::fs::read_to_string(d.0.join("catalogue/README.md")).unwrap().contains("F-0001.md"));
         assert!(!d.0.join("catalogue/F-0001.md").exists() && !d.0.join(GOAL_RECORDINGS).exists());
         // Moved once, nothing more moves.
+        assert_eq!(run(&d.0, false).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn a_workspace_from_port_next_moves_its_questions_and_branches_to_status() {
+        let goal =
+            "description = \"walk\"\nheld_out = [\"walk/p\"]\nconfirmed = { at = \"t\", held_out = [\"walk/p\"] }\n";
+        let (d, _) = workspace(
+            goal,
+            &[
+                (WONT_REACH, "\"0x80010010\" = \"debug only\"\n"),
+                (QUESTIONS, "# Open questions\n\n- what resets the timer?\n"),
+                (STATUS, "# Status\n\n## Next, and why\n\nThe jump.\n"),
+                (GUARD, "{}"),
+                ("scenarios/walk/p.jsonl", ""),
+            ],
+        );
+        let out = run(&d.0, false).unwrap();
+        assert_eq!(out["removed"], json!([WONT_REACH, QUESTIONS, GUARD]));
+        let port = Port::load(&d.0).unwrap();
+        assert!(port.problems.is_empty(), "{:?}", port.problems);
+        assert_eq!(port.recordings.held_out, ["walk/p"]);
+        let status = std::fs::read_to_string(d.0.join(STATUS)).unwrap();
+        assert!(status.starts_with("# Status\n\n## Next, and why\n\nThe jump.\n"), "{status}");
+        assert!(status.contains("## Open questions") && status.contains("- what resets the timer?\n"), "{status}");
+        assert!(status.contains("- 0x80010010: debug only\n"), "{status}");
+        assert_eq!(
+            std::fs::read_to_string(d.0.join(GOAL)).unwrap(),
+            "description = \"walk\"\nheld_out = [\"walk/p\"]\n"
+        );
         assert_eq!(run(&d.0, false).unwrap(), Value::Null);
     }
 

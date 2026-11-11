@@ -2,7 +2,7 @@
 //! and `glossary/binding/`, where the PlayStation keeps them and what ends
 //! a tick), `psx scenario record` (the original's quantities tick by tick,
 //! from the scenario's state), `psx scenario check` (the determinism check)
-//! and the facts `port next` reads.
+//! and the facts `port status` reads.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -254,16 +254,9 @@ enum PortAction {
     /// Add a ready-made crate under addons/ (full: a window, a renderer with a PS1 and a
     /// modern look, the disc import and menus, wired into game/src/main.rs).
     Add(template::PortAddArgs),
-    /// Show the goal, the person's held-out plays, the wont_reach branches and any problems;
-    /// with --yes, record the person's confirmation in goal.toml.
-    #[command(hide = true)]
-    Confirm(port::PortConfirmArgs),
-    /// The goal's recordings by state, its code and branches, problems, and whether a review is due.
+    /// Where the port stands: its recordings, the code they ran and the port cites, branches,
+    /// assets, plays, problems, and whether a review is due. Information only.
     Status(port::PortStatusArgs),
-    /// The one item due now: what, why, and the fact that will show it done.
-    /// An agent item handed out three times with nothing changed is reported as stuck instead.
-    #[command(hide = true)]
-    Next(port::PortNextArgs),
     /// Replay the recordings against the port (its program, over the port protocol) and
     /// write the goal's verdict for HEAD, which must have no uncommitted changes.
     Check(port::PortCheckArgs),
@@ -430,9 +423,7 @@ fn main() -> ExitCode {
             PortAction::Init(a) => a.exec(&ctx),
             PortAction::Update(a) => a.exec(&ctx),
             PortAction::Add(a) => a.exec(&ctx),
-            PortAction::Confirm(a) => a.exec(&ctx),
             PortAction::Status(a) => a.exec(&ctx),
-            PortAction::Next(a) => a.exec(&ctx),
             PortAction::Check(a) => a.exec(&ctx),
             PortAction::Vectors(a) => a.exec(&ctx),
         },

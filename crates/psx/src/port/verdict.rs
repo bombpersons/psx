@@ -27,13 +27,9 @@ pub struct Verdict {
     /// that differ, or why it did not run; empty when it passed.
     pub recordings: BTreeMap<String, Vec<String>>,
     /// Where each failing work recording first differs, for the order
-    /// port next gives them in; never shown.
+    /// they are listed in; never shown.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub differs: BTreeMap<String, Differs>,
-    /// The failing recording Fix gives: the one it gave by the verdict
-    /// before while it still fails, so a fix is not left for another.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fixing: Option<String>,
     /// Where in the original to look, by failing work recording (the
     /// pointer).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -49,19 +45,13 @@ pub struct Differs {
 }
 
 impl Verdict {
-    /// Those of `work` that fail, in the order Fix gives them: the one
-    /// being fixed, then the earliest difference, the fewest quantities,
-    /// by name.
+    /// Those of `work` that fail: the earliest difference first, then the
+    /// fewest quantities, by name.
     pub fn failing(&self, work: &[String]) -> Vec<String> {
         let mut out: Vec<&String> = work.iter().filter(|r| !self.of(r).is_empty()).collect();
         let key = |r: &&String| {
             let d = self.differs.get(*r);
-            (
-                self.fixing.as_ref() != Some(*r),
-                d.map_or(u64::MAX, |d| d.tick),
-                d.map_or(usize::MAX, |d| d.quantities),
-                (*r).clone(),
-            )
+            (d.map_or(u64::MAX, |d| d.tick), d.map_or(usize::MAX, |d| d.quantities), (*r).clone())
         };
         out.sort_by_key(key);
         out.into_iter().cloned().collect()

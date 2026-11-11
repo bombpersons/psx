@@ -560,24 +560,6 @@ impl Functions {
     pub(crate) fn starts(&self, addr: u32) -> bool {
         self.0.iter().any(|i| i.functions.iter().any(|f| f.entry == addr))
     }
-
-    /// When `addr` is a conditional branch of the inventory's code: the
-    /// entries of the functions holding it.
-    pub(crate) fn branch(&self, addr: u32) -> Option<Vec<u32>> {
-        let mut out = None;
-        for i in &self.0 {
-            if i.word(addr).is_some_and(conditional) {
-                out.get_or_insert_with(Vec::new).extend(i.functions_at(addr).iter().map(|&f| i.functions[f].entry));
-            }
-        }
-        out
-    }
-
-    /// The conditional branches of the inventory's code from `start` to
-    /// `end` (excluded), each with the entries of the functions holding it.
-    pub(crate) fn branches_in(&self, start: u32, end: u32) -> Vec<(u32, Vec<u32>)> {
-        (start & !3..end).step_by(4).filter_map(|a| self.branch(a).map(|h| (a, h))).collect()
-    }
 }
 
 /// A conditional branch of the code to port, as the recordings ran it.

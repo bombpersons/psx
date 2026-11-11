@@ -254,7 +254,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         assert!(start(&root, "context", json!({}), caller("cli", None)).is_none());
         std::fs::create_dir_all(root.join(".psx")).unwrap();
-        let call = start(&root, "port_next", json!({"x": 1}), caller("mcp", Some("codex".into()))).unwrap();
+        let call = start(&root, "port_status", json!({"x": 1}), caller("mcp", Some("codex".into()))).unwrap();
         let id = call.id.clone();
         call.end(&json!({"status": "work", "item": {"kind": "record"}, "facts": {}}), 0);
         let lines: Vec<Value> = std::fs::read_to_string(root.join(LOG))
@@ -262,7 +262,7 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
-        assert_eq!((lines[0]["event"].as_str(), lines[0]["tool"].as_str()), (Some("start"), Some("port_next")));
+        assert_eq!((lines[0]["event"].as_str(), lines[0]["tool"].as_str()), (Some("start"), Some("port_status")));
         assert_eq!(lines[0]["caller"]["client"], "codex");
         assert_eq!(lines[1]["summary"], "status: work; item: record; [facts]");
         assert!(root.join(RESULTS).join(format!("{id}.json")).is_file());

@@ -8,8 +8,8 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::next::Facts;
-use super::next::Git;
+use super::status::Facts;
+use super::status::Git;
 use super::verdict::{self, Verdict};
 use super::{Port, assets};
 use crate::Error;
@@ -368,7 +368,6 @@ impl PortCheckArgs {
             failures,
             recordings,
             differs: BTreeMap::new(),
-            fixing: None,
             pointers: BTreeMap::new(),
         };
         let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -381,13 +380,6 @@ impl PortCheckArgs {
                 }
             }
         }
-        // Fix stays on the recording it gave while that still fails.
-        let before = match verdict::state(root, Some(&head)) {
-            verdict::State::Current(b) => Some(b),
-            _ => std::fs::read(verdict::path(root)).ok().and_then(|b| serde_json::from_slice::<Verdict>(&b).ok()),
-        };
-        let failing = v.failing(work);
-        v.fixing = before.and_then(|b| b.failing(work).into_iter().next()).filter(|r| failing.contains(r));
         let failing = v.failing(work);
         // Where to look, for each failing work recording, the first given first.
         if ran.is_ok() {

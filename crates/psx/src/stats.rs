@@ -23,7 +23,7 @@ fn jsonl(path: &Path) -> Vec<Value> {
 pub fn of(root: &Path) -> Value {
     json!({
         "now": crate::now_ms() as u64,
-        "progress": jsonl(&root.join(crate::port::next::PROGRESS)),
+        "progress": jsonl(&root.join(crate::port::status::PROGRESS)),
         "inventory": jsonl(&root.join(".psx/inventory_history.jsonl")),
         "calls": calls(root),
         "git": git(root),

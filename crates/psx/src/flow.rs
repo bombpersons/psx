@@ -240,11 +240,6 @@ pub(crate) struct Test {
     pub taken: bool,
 }
 
-/// Whether a wont_reach key is a test, as [`Test`] prints them.
-pub(crate) fn is_test(k: &str) -> bool {
-    k.contains(" == ") || k.contains(" > 0") || k.contains(" < 0")
-}
-
 /// A value read back: a constant, or an expression of memory and calls.
 #[derive(Clone)]
 enum Val {

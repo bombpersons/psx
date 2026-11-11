@@ -139,7 +139,7 @@ pub const TRIES: &str = ".psx/handoffs/tries";
 /// recording (`id`, `name`, from its state or the end of `from`), or with no
 /// scenario a play from power-on whose run directory keeps the state and
 /// input. Queued and claimed as a request is, so it is answered, recorded and
-/// reported the same way; `port next` tells the agent the person played.
+/// reported the same way; `port status` tells the agent the person played.
 pub fn person_play(
     ctx: &Ctx,
     what: &str,

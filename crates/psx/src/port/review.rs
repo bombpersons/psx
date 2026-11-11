@@ -2,14 +2,11 @@
 //! someone who did not write it (docs/port-design.md, The review). It asks
 //! whether the code is what one would write for a new game, not whether it
 //! does what the original does (the recordings check that). TOML front
-//! matter between `+++` lines names the commit reviewed and whether the
-//! goal's work recordings all passed then (`matching`) and its work was
-//! finished (`finished`); each finding is a `## ` section, answered by a
-//! `**Answer:**` line. The review holds while the code is unchanged since
-//! its commit and every finding has an answer. A review comes when the
-//! goal comes to match its recordings, again when it is finished (its
-//! branches resolved, no question open, all its code cited), and once
-//! enough of the code changed in between.
+//! matter between `+++` lines names the commit reviewed; each finding is a
+//! `## ` section, answered by a `**Answer:**` line. The review holds while
+//! the code is unchanged since its commit and every finding has an answer.
+//! A review is due once enough of the code changed since the last, or was
+//! written with none yet; nothing waits on it.
 
 use std::path::Path;
 
@@ -22,42 +19,11 @@ pub const REVIEW: &str = "review.md";
 /// The port's code: what the review reads and what makes it stale.
 pub const CODE: [&str; 2] = ["game", "tools"];
 
+/// Fields reviews wrote while psx kept the goal's states (`matching`,
+/// `finished`) and features are left unread.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Front {
     commit: String,
-    #[serde(default)]
-    matching: bool,
-    #[serde(default)]
-    finished: Flag,
-    /// What reviews wrote while there were features: the ones matching.
-    #[serde(default)]
-    features: Vec<String>,
-}
-
-/// `finished`: true or false, or as reviews wrote it while there were
-/// features, a list of those finished (some finished: true).
-#[derive(Debug, Default, Deserialize)]
-#[serde(untagged)]
-enum Flag {
-    #[default]
-    No,
-    Is(bool),
-    Listed(Vec<String>),
-}
-
-impl Front {
-    fn matching(&self) -> bool {
-        self.matching || !self.features.is_empty()
-    }
-
-    fn finished(&self) -> bool {
-        match &self.finished {
-            Flag::No => false,
-            Flag::Is(b) => *b,
-            Flag::Listed(l) => !l.is_empty(),
-        }
-    }
 }
 
 /// The review as it stands.
@@ -93,10 +59,6 @@ impl Review {
             Review::Holds { .. } => "holds",
         }
     }
-
-    pub fn holds(&self) -> bool {
-        matches!(self, Review::Holds { .. })
-    }
 }
 
 /// The findings' headings, each with whether it has an answer.
@@ -114,17 +76,6 @@ fn findings(body: &str) -> Vec<(String, bool)> {
 
 fn git(root: &Path, args: &[&str]) -> Option<std::process::Output> {
     std::process::Command::new("git").args(args).current_dir(root).output().ok()
-}
-
-/// Whether the review says the goal matched its recordings when it was
-/// written, and whether it was finished; neither without a readable review.
-pub fn says(root: &Path) -> (bool, bool) {
-    std::fs::read_to_string(root.join(REVIEW))
-        .ok()
-        .and_then(|t| split_front(&t).ok())
-        .and_then(|(front, _)| toml::from_str::<Front>(&front).ok())
-        .map(|f| (f.matching(), f.finished()))
-        .unwrap_or_default()
 }
 
 /// The code's files git doesn't track yet.
@@ -265,8 +216,7 @@ pub fn rounds(root: &Path) -> serde_json::Value {
                 r["findings"] = json!(findings);
                 r["versions"].as_array_mut().unwrap().push(version);
             }
-            None => rounds.push(json!({"reviewed": f.commit, "matching": f.matching(), "finished": f.finished(),
-                "findings": findings, "versions": [version]})),
+            None => rounds.push(json!({"reviewed": f.commit, "findings": findings, "versions": [version]})),
         }
     }
     // What each round added to the one before.
@@ -372,20 +322,19 @@ mod tests {
         assert_eq!(read(root), Review::Open { unanswered: vec!["A finding".into()] });
         write("## A finding\nwhat and why\n**Answer:** done in the next commit\n");
         assert_eq!(read(root), Review::Holds { commit: head.clone(), findings: 1 });
-        assert_eq!(says(root), (false, false));
-        std::fs::write(root.join(REVIEW), format!("+++\ncommit = \"{head}\"\nmatching = true\n+++\n")).unwrap();
-        assert_eq!((read(root).holds(), says(root)), (true, (true, false)));
-        // As reviews wrote it while there were features.
+        // As reviews wrote it while psx kept the goal's states, and features.
         std::fs::write(
             root.join(REVIEW),
-            format!("+++\ncommit = \"{head}\"\nfeatures = [\"F-0001\"]\nfinished = [\"F-0001\"]\n+++\n"),
+            format!(
+                "+++\ncommit = \"{head}\"\nmatching = true\nfeatures = [\"F-0001\"]\nfinished = [\"F-0001\"]\n+++\n"
+            ),
         )
         .unwrap();
-        assert_eq!((read(root).holds(), says(root)), (true, (true, true)));
+        assert!(matches!(read(root), Review::Holds { .. }));
         // What is not code leaves it holding.
-        std::fs::create_dir_all(root.join("catalogue")).unwrap();
-        std::fs::write(root.join("catalogue/questions.md"), "- why\n").unwrap();
-        assert!(read(root).holds());
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("notes/why.md"), "- why\n").unwrap();
+        assert!(matches!(read(root), Review::Holds { .. }));
         std::fs::write(root.join("game/src/jump.rs"), "fn jump() { let _ = 1; }\n").unwrap();
         // Uncommitted: stale, its lines counted.
         let stale = |lines| Review::Stale { commit: head.clone(), changed: vec!["game/src/jump.rs".into()], lines };

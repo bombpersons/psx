@@ -1628,7 +1628,7 @@ impl Replacement {
 
 /// Functions whose C passed a check and whose last check fails, with the
 /// last pass's commit and the first failing case's first difference
-/// (port next's Fix).
+/// (port status shows them).
 pub fn regressed(root: &Path) -> Vec<(String, Option<String>, String)> {
     let names = psx_symbols::names::load(root);
     let log = std::fs::read_to_string(root.join(CHECKS).join("checks.jsonl")).unwrap_or_default();

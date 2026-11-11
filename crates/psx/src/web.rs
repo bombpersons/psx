@@ -436,13 +436,12 @@ fn events(mut out: TcpStream, st: &State) {
     }
 }
 
-const WATCHED: [(&str, &str); 8] = [
+const WATCHED: [(&str, &str); 7] = [
     ("messages", crate::messages::LOG),
     ("messages_seen", crate::messages::SEEN),
     ("calls", crate::calls::LOG),
-    ("progress", crate::port::next::PROGRESS),
+    ("progress", crate::port::status::PROGRESS),
     ("check", ".psx/port/last.json"),
-    ("guard", ".psx/port/next.json"),
     ("commit", ".git/logs/HEAD"),
     ("goal", crate::port::GOAL),
 ];
@@ -646,14 +645,14 @@ fn messages(root: &Path) -> Value {
 fn overview(root: &Path) -> Value {
     let port = root.join(crate::port::GOAL).is_file();
     let status = if port {
-        match crate::port::next::look(root) {
+        match crate::port::status::look(root) {
             Ok(v) => v,
             Err(e) => json!({"error": e.to_value()["error"]}),
         }
     } else {
         Value::Null
     };
-    let progress = jsonl(&root.join(crate::port::next::PROGRESS));
+    let progress = jsonl(&root.join(crate::port::status::PROGRESS));
     let recent = recent_calls(root, 400);
     let attention = attention(root, &status, &progress, &recent);
     let last = recent.iter().rev().find_map(|c| c["t"].as_u64());
@@ -746,24 +745,8 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
     let mut add = |level: &str, title: String, detail: String| {
         out.push(json!({"level": level, "title": title, "detail": detail}))
     };
-    let next = &status["next"];
     if let Some(e) = status.get("error") {
         add("act", "port status fails".into(), e["message"].as_str().unwrap_or("").into());
-    }
-    // The Wait item is the requests above.
-    if next["who"] == "person" && next["item"] != "Wait" {
-        let item = next["item"].as_str().unwrap_or("");
-        add("act", format!("{item}: the port waits for you"), next["why"].as_str().unwrap_or("").into());
-    }
-    if let Some(g) = status.get("guard") {
-        let (count, limit) = (g["count"].as_u64().unwrap_or(0), g["limit"].as_u64().unwrap_or(3));
-        if count >= 2 && count < limit && next["who"] == "agent" {
-            add(
-                "warn",
-                format!("port next gave {} {count} times unchanged", g["item"].as_str().unwrap_or("").trim()),
-                format!("at {limit} it reports Stuck"),
-            );
-        }
     }
     if let Some(p) = status["problems"].as_array().filter(|p| !p.is_empty()) {
         add(
@@ -780,14 +763,6 @@ fn attention(root: &Path, status: &Value, progress: &[Value], calls: &[Value]) -
             "warn",
             format!("passing recordings fell from {best} to {now}"),
             "a change broke recordings that passed before: the progress history shows where".into(),
-        );
-    }
-    let questions = status["questions"].as_array().map_or(0, Vec::len);
-    if questions > 0 {
-        add(
-            "info",
-            format!("{questions} open question{}", if questions == 1 { "" } else { "s" }),
-            "in catalogue/questions.md".into(),
         );
     }
     // The same call failing again and again.
@@ -1429,7 +1404,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("psx-web-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join(".psx")).unwrap();
-        let a = crate::calls::start(&root, "port_next", json!({}), json!({"via": "cli"})).unwrap();
+        let a = crate::calls::start(&root, "port_status", json!({}), json!({"via": "cli"})).unwrap();
         a.end(&json!({"item": "Record"}), 0);
         let first = calls(&root, None);
         assert_eq!(first["lines"].as_array().unwrap().len(), 2);
@@ -1454,14 +1429,9 @@ mod tests {
         let a = attention(Path::new("/nonexistent"), &Value::Null, &[], &calls);
         assert!(a.iter().any(|x| x["title"] == "run failed 3 times with the same arguments"), "{a:?}");
         let progress = [json!({"recordings": {"pass": 5}}), json!({"recordings": {"pass": 3}})];
-        let a = attention(
-            Path::new("/nonexistent"),
-            &json!({"next": {"who": "person", "item": "Confirm"}}),
-            &progress,
-            &[],
-        );
+        let a = attention(Path::new("/nonexistent"), &Value::Null, &progress, &[]);
         let titles: Vec<&str> = a.iter().filter_map(|x| x["title"].as_str()).collect();
-        assert_eq!(titles, ["Confirm: the port waits for you", "passing recordings fell from 5 to 3"]);
+        assert_eq!(titles, ["passing recordings fell from 5 to 3"]);
     }
 }
 
