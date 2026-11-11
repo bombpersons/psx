@@ -60,7 +60,7 @@ pub struct HandoffArgs {
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// With a scenario: start at the end of this recording of it instead of at its state.
+    /// With a scenario: start at the end of this recording of it (NAME@TICK: after its tick).
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,

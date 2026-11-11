@@ -37,7 +37,8 @@ same commands investigate a game: start with context.
 
 1. The person says what they want; the agent writes it as the goal.
 2. Record the original in scenarios showing what the goal describes:
-   scripted runs, and play-throughs by the person.
+   play-throughs by the person, and short scripted runs of each thing
+   they show.
 3. Name what to compare in the glossary, and where the original keeps it.
 4. Find the code the recordings run: code_coverage_diff of recordings
    doing the thing against ones not doing it, watches on the values
@@ -53,9 +54,13 @@ Rules:
   and rule, and what was not verified.
 - A long play is the map, not the work. When its first difference shows
   something not yet ported, record a few short recordings of that thing,
-  starting near it and varying how it happens, and port it until they
-  pass; then see the play get further. A rule built from one moment of a
-  long play rarely holds at the next.
+  starting near it (from=PLAY@TICK) and varying how it happens, and port
+  it until they pass; then see the play get further. A rule built from one
+  moment of a long play rarely holds at the next.
+- Choose recordings by what they show. A branch the recordings take only
+  one way (port_status branches=true) is a case none of them has shown:
+  a short recording that takes it the other way checks the rule there.
+  One no recording can reach goes in STATUS.md, with why.
 - Hold recordings out. The person's plays in goal.toml's held_out are
   judged and counted, not shown; never work on them or tune to them. A
   play the agent asked for is a work recording unless the person moves it
@@ -152,9 +157,12 @@ Recordings are latched, steady and fixed unless stock (topic run).
 Beside it, <name>.coverage.json keeps what the
 original ran as the inventory's code (no instructions, so it is committed):
 take code_inventory first, and unpack compressed overlays first (topic
-code). from starts at the end of another recording of the scenario, to
-split a long route. scenario_show reads a recording per tick, with each
-numeric quantity's change since the tick before.
+code). from=NAME starts at the end of another recording of the scenario,
+to split a long route; from=NAME@TICK starts after its tick TICK, to
+record near a moment of a play. Either way the first tick runs with the
+pad released, and the port reaches the start by running those ticks
+first. A held-out play is never a start. scenario_show reads a recording
+per tick, with each numeric quantity's change since the tick before.
 
 scenario_check is the determinism check: it reaches each scenario again
 with idle fields added before the chain's last run and records again. A
@@ -164,7 +172,7 @@ schedule is only a note. A recording made before the scenario's compare or
 a quantity's type changed is made again.
 
 scenario_play id name request asks the person to play from the
-scenario's state after its first tick (or the end of from). It queues;
+scenario's state after its first tick (or where from starts). It queues;
 port_status lists it once played, recorded as scenario_record does.
 Write the request in game terms: the spot, the way to face, what should
 have happened. Without a scenario, a play reaches a hard place for

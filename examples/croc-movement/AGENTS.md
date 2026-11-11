@@ -33,10 +33,17 @@ Ask the person for a play of the goal with `scenario_play` as soon as the
 first recordings work: one long play shows far more of the game than short
 recordings you make yourself. Use it as the map, not the work. When its
 first difference shows something not yet ported, record a few short
-recordings of that thing yourself, starting near it and varying how it
+recordings of that thing yourself, starting near it (`scenario_record`
+with `from` set to the play and a tick before it) and varying how it
 happens, and port it until they pass; then come back to the play to see it
 get further. A rule built from one moment of a long play rarely holds at the
 next, and the short recordings keep it checked once it works.
+
+Choose recordings by what they show. `port_status` with `branches=true`
+lists the branches in the code the recordings ran that they take only one
+way: each is a case no recording has shown yet, and a short recording that
+takes the other way checks the rule there. Write the ones no recording can
+reach in STATUS.md, with why.
 
 Recordings compare what a player could notice: where things are and which
 way they face, what's drawn (the camera, the animation playing and its

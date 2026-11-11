@@ -288,7 +288,57 @@ pub struct Recording {
     pub rows: Vec<Row>,
 }
 
+/// Where a recording starts when it does not start at its scenario's
+/// state: after another recording of the scenario, whole or to a tick.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Continues {
+    /// The recording it continues, in the same scenario.
+    pub recording: String,
+    /// The last of that recording's ticks run first; none: all of them.
+    pub after: Option<u64>,
+}
+
+impl Continues {
+    /// `NAME` (from the end of recording NAME) or `NAME@TICK` (from the
+    /// end of its tick TICK, 1 or later).
+    pub fn parse(from: &str) -> Result<Continues, String> {
+        let (recording, after) = match from.split_once('@') {
+            Some((name, tick)) => {
+                let tick = tick
+                    .parse()
+                    .ok()
+                    .filter(|&t: &u64| t > 0)
+                    .ok_or(format!("from {from:?}: NAME@TICK takes a tick, 1 or later"))?;
+                (name, Some(tick))
+            }
+            None => (from, None),
+        };
+        if recording.is_empty() || !recording.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            return Err(format!("from {from:?}: a recording's name (letters, digits, _ and -), or NAME@TICK"));
+        }
+        Ok(Continues { recording: recording.into(), after })
+    }
+
+    /// How many of `rec`'s ticks run before the recording that continues it.
+    pub fn ticks(&self, rec: &Recording) -> Result<usize, String> {
+        match self.after {
+            None => Ok(rec.rows.len()),
+            Some(t) if t as usize <= rec.rows.len() => Ok(t as usize),
+            Some(t) => Err(format!("{}@{t}: it has {} ticks", self.recording, rec.rows.len())),
+        }
+    }
+}
+
 impl Recording {
+    /// The recording this one continues, as its producer's `from` names it.
+    pub fn continues(&self) -> Result<Option<Continues>, String> {
+        match self.header.producer.details.get("from") {
+            None => Ok(None),
+            Some(serde_json::Value::String(f)) => Continues::parse(f).map(Some),
+            Some(other) => Err(format!("producer.details.from: {other}: a recording's name")),
+        }
+    }
+
     pub fn parse(text: &str) -> Result<Recording, String> {
         let mut lines = text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty());
         let (_, first) = lines.next().ok_or("empty recording")?;

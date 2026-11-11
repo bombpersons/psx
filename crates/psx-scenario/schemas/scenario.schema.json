@@ -36,6 +36,13 @@
   "additionalProperties": false,
   "description": "`scenarios/<id>.toml`.",
   "properties": {
+    "assets": {
+      "description": "The disc's assets its recordings need to replay, by name (a disc\npath, archive entry or `format:<id>`), for the port's importers.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "chain": {
       "description": "How the original gets there: the producer's state chain, relative to\nthe workspace (for psx, `notes/states/<name>.json`).",
       "type": "string"

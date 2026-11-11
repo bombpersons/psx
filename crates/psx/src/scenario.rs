@@ -596,8 +596,8 @@ pub struct ScenarioRecordArgs {
     #[arg(long)]
     #[serde(default)]
     pub description: Option<String>,
-    /// Start at the end of this recording of the scenario instead of at its state (a long
-    /// play-through split in parts); its first tick runs with the pad released, as always.
+    /// Start where another recording of the scenario leaves off, not at its state: NAME, at
+    /// its end; NAME@TICK, after its tick TICK. Its first tick still runs with the pad released.
     #[arg(long)]
     #[serde(default)]
     pub from: Option<String>,
@@ -652,9 +652,19 @@ pub(crate) fn prepare(ctx: &Ctx, id: &str, name: &str, from: Option<&str>, repla
         return Err(Error::invalid(format!("{}: exists; replace=true writes over it", rel(root, &out))));
     }
     if let Some(f) = from {
-        check_name("from", f)?;
-        if f == name {
+        let c = format::Continues::parse(f).map_err(Error::invalid)?;
+        if c.recording == name {
             return Err(Error::invalid("from names the recording being written: continue from another one"));
+        }
+        // A held-out play is judged, never worked from: a recording that
+        // starts inside it would show the agent what it holds.
+        let held_out =
+            crate::port::Port::load(root).is_ok_and(|p| p.goal.held_out.contains(&format!("{id}/{}", c.recording)));
+        if held_out {
+            return Err(Error::invalid(format!(
+                "{id}/{} is held out (goal.toml's held_out): judged, never worked from; continue from a work recording",
+                c.recording
+            )));
         }
         continued(&l, f).map_err(Error::invalid)?;
     }
@@ -682,17 +692,25 @@ fn kept_input(name: &str, rec: &Recording) -> Result<(u32, Vec<crate::replay::In
     Ok((frames, events))
 }
 
-/// One of the recordings that lead to another's end: its name, frames,
-/// input and adjustments.
-type Continued = (String, u32, Vec<crate::replay::Input>, Adjustments);
+/// One of the recordings that lead to where another starts: its name,
+/// frames, input, adjustments and the last of its ticks run (none: all).
+struct Continued {
+    name: String,
+    frames: u32,
+    events: Vec<crate::replay::Input>,
+    adjust: Adjustments,
+    after: Option<u64>,
+}
 
-/// The recordings that lead to the end of `name`, earliest first: `name`
-/// and those it continues, each with its frames, input and adjustments.
-fn continued(l: &Loaded, name: &str) -> Result<Vec<Continued>, String> {
-    let mut out = Vec::new();
-    let mut next = Some(name.to_string());
-    while let Some(n) = next {
-        if out.iter().any(|(m, _, _, _)| *m == n) {
+/// The recordings that lead to where a recording continuing from `from`
+/// starts, earliest first: the one `from` names (`NAME` or `NAME@TICK`)
+/// and those it continues.
+fn continued(l: &Loaded, from: &str) -> Result<Vec<Continued>, String> {
+    let mut out: Vec<Continued> = Vec::new();
+    let mut next = Some(format::Continues::parse(from)?);
+    while let Some(c) = next {
+        let n = c.recording;
+        if out.iter().any(|m| m.name == n) {
             return Err(format!("{n} continues from itself, through the recordings it continues"));
         }
         let rec = match l.recordings.iter().find(|(m, _, _)| *m == n) {
@@ -701,25 +719,55 @@ fn continued(l: &Loaded, name: &str) -> Result<Vec<Continued>, String> {
             Some((_, f, Err(e))) => return Err(format!("{}: {e}", f.display())),
             None => return Err(format!("{n}: no recording of that name in {SCENARIOS}/{}/", l.id)),
         };
+        format::Continues { recording: n.clone(), after: c.after }.ticks(rec)?;
         let (frames, events) = kept_input(&n, rec)?;
         let adjust = Adjustments::from_details(&rec.header.producer.details).map_err(|e| format!("{n}: {e}"))?;
-        next = rec.header.producer.details.get("from").and_then(Json::as_str).map(Into::into);
-        out.push((n, frames, events, adjust));
+        next = rec.continues().map_err(|e| format!("{n}: {e}"))?;
+        out.push(Continued { name: n, frames, events, adjust, after: c.after });
     }
     out.reverse();
     Ok(out)
 }
 
-/// Run `m` on to the end of recording `from` (and those it continues).
+/// Ends a replay at the end of its tick `after` (1 or later; the first
+/// tick the replay sees is the recording's initial moment).
+struct StopAfter {
+    after: u64,
+    seen: u64,
+}
+
+impl Observer for StopAfter {
+    fn tick(&mut self, _rel: u64, _m: &mut Machine) -> crate::session::Flow {
+        self.seen += 1;
+        if self.seen > self.after { crate::session::Flow::Stop("tick_reached") } else { crate::session::Flow::Go }
+    }
+    fn finish(self: Box<Self>, _m: &Machine, _out: &mut Out) -> crate::Result<()> {
+        Ok(())
+    }
+}
+
+/// Run `m` on to where a recording continuing from `from` starts: the end
+/// of the recording it names, or of its tick (`NAME@TICK`), through those
+/// it continues.
 fn reach_end(m: &mut Machine, l: &Loaded, q: &Quantities, from: &str, deadline: Duration) -> crate::Result<()> {
-    for (n, frames, events, adjust) in continued(l, from).map_err(Error::invalid)? {
+    for c in continued(l, from).map_err(Error::invalid)? {
         // Each as it was recorded.
-        let q = Quantities { binding: q.binding, types: q.types.clone(), kept: q.kept.clone(), adjust };
-        let r = record(m, &q, frames, &events, None, deadline, None, None, None);
+        let q = Quantities { binding: q.binding, types: q.types.clone(), kept: q.kept.clone(), adjust: c.adjust };
+        let mut stop = c.after.map(|after| StopAfter { after, seen: 0 });
+        let look = stop.as_mut().map(|s| s as &mut dyn Observer);
+        let r = record(m, &q, c.frames, &c.events, None, deadline, None, None, look);
         if let Some(why) = unrecorded(&r) {
             return Err(Error::invalid(format!(
-                "replaying {n} to continue from its end gave no recording: {}",
+                "replaying {} to continue from it gave no recording: {}",
+                c.name,
                 why["status"].as_str().unwrap_or("")
+            )));
+        }
+        if let Some(after) = c.after.filter(|&a| (r.ticks.len() as u64) < a) {
+            return Err(Error::invalid(format!(
+                "replaying {} reached tick {} of the {after} it continues from: the game ran differently",
+                c.name,
+                r.ticks.len()
             )));
         }
     }

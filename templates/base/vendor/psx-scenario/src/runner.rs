@@ -50,9 +50,10 @@
 //! A misspelt or removed quantity is a compile error.
 //!
 //! For each recording (`scenarios/<id>/<name>.jsonl`, made by `psx scenario
-//! record`) the runner makes a fresh port, launches the scenario, compares
-//! the quantities with the recording's initial values (the end of the
-//! original's first tick), then runs one tick per line with the line's pad,
+//! record`) the runner makes a fresh port, launches the scenario (and for
+//! one that continues another, `from`, runs that one's ticks first, as
+//! [`lead_in`] gives them), compares the quantities with the recording's
+//! initial values (the end of the original's first tick), then runs one tick per line with the line's pad,
 //! the pad's mode ([`Pad::analog`]) and sticks (their raw bytes, in
 //! [`Pad::sticks`]) and compares again. Each quantity is compared within
 //! the scenario's tolerance (`compare`, raw units); the first tick each one
@@ -190,6 +191,37 @@ impl Pad {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Pad { buttons, analog: t.analog, sticks: t.sticks })
     }
+}
+
+/// The pads that take a launched port to where `rec` starts: none for a
+/// recording from the scenario's state; for one that continues another
+/// (`from`), that one's ticks (and those it continues), each followed by
+/// the released tick the original ran to start the next. `dir` is the
+/// scenario's folder of recordings.
+pub fn lead_in(dir: &Path, rec: &Recording) -> Result<Vec<Pad>, String> {
+    let mut chain = Vec::new();
+    let mut next = rec.continues()?;
+    while let Some(c) = next {
+        if chain.iter().any(|(n, _, _): &(String, Recording, usize)| *n == c.recording) {
+            return Err(format!("{} continues from itself, through the recordings it continues", c.recording));
+        }
+        let path = dir.join(format!("{}.jsonl", c.recording));
+        let earlier = read(&path)
+            .and_then(|t| Recording::parse(&t))
+            .map_err(|e| format!("the recording it continues, {}: {e}", c.recording))?;
+        let ticks = c.ticks(&earlier)?;
+        next = earlier.continues()?;
+        chain.push((c.recording, earlier, ticks));
+    }
+    let mut pads = Vec::new();
+    for (_, earlier, ticks) in chain.iter().rev() {
+        for t in earlier.expand().iter().take(*ticks) {
+            pads.push(Pad::of(t)?);
+        }
+        let analog = pads.last().is_some_and(|p: &Pad| p.analog);
+        pads.push(Pad { analog, ..Pad::default() });
+    }
+    Ok(pads)
 }
 
 /// The port, as scenarios run it.
@@ -335,16 +367,24 @@ impl<P: Port> Scenarios<P> {
                 let p = rec.check(id);
                 if p.is_empty() { Ok(rec) } else { Err(p.join("; ")) }
             });
-            r.recordings.push(match rec {
-                Ok(rec) if r.problems.is_empty() => self.recording(&name, &s, &rec, observed),
-                Ok(rec) => RecordingReport {
+            let lead = rec.as_ref().map_err(Clone::clone).and_then(|rec| lead_in(&dir.join(id), rec));
+            r.recordings.push(match (rec, lead) {
+                (Ok(rec), Ok(lead)) if r.problems.is_empty() => self.recording(&name, &s, &rec, &lead, observed),
+                (Ok(rec), Err(e)) => RecordingReport {
+                    name,
+                    captured: rec.header.source.kind == SourceKind::Captured,
+                    ticks: rec.rows.len(),
+                    failures: vec![e],
+                    ..Default::default()
+                },
+                (Ok(rec), Ok(_)) => RecordingReport {
                     name,
                     captured: rec.header.source.kind == SourceKind::Captured,
                     ticks: rec.rows.len(),
                     failures: vec!["not run: the scenario has problems".into()],
                     ..Default::default()
                 },
-                Err(e) => RecordingReport { name, failures: vec![e], ..Default::default() },
+                (Err(e), _) => RecordingReport { name, failures: vec![e], ..Default::default() },
             });
         }
         r
@@ -353,11 +393,20 @@ impl<P: Port> Scenarios<P> {
     /// Replays one recording. A panic in the port (its launcher, a tick or
     /// an observation) fails this recording, at the tick it happened, and
     /// the rest still run and reach the report.
-    fn recording(&self, name: &str, s: &Scenario, rec: &Recording, observed: &mut BTreeSet<String>) -> RecordingReport {
+    fn recording(
+        &self,
+        name: &str,
+        s: &Scenario,
+        rec: &Recording,
+        lead: &[Pad],
+        observed: &mut BTreeSet<String>,
+    ) -> RecordingReport {
         let run = |observed: &mut BTreeSet<String>| {
             let mut at = String::from("the launcher");
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.replay(name, s, rec, observed, &mut at)))
-                .map_err(|p| (at, panic_message(&p)))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.replay(name, s, rec, lead, observed, &mut at)
+            }))
+            .map_err(|p| (at, panic_message(&p)))
         };
         let (mut out, first) = match run(observed) {
             Ok(r) => r,
@@ -392,6 +441,7 @@ impl<P: Port> Scenarios<P> {
         name: &str,
         s: &Scenario,
         rec: &Recording,
+        lead: &[Pad],
         observed: &mut BTreeSet<String>,
         at: &mut String,
     ) -> (RecordingReport, Trail) {
@@ -407,6 +457,12 @@ impl<P: Port> Scenarios<P> {
         if let Err(e) = port.launch(&s.kind, &s.parameters) {
             out.failures.push(format!("the launcher failed: {e}"));
             return (out, Trail::new());
+        }
+        // A recording that continues another starts where that one's
+        // ticks (and the released tick after them) leave the port.
+        *at = "the recordings it continues".into();
+        for pad in lead {
+            port.tick(pad);
         }
         let compared: Vec<(&String, i128)> = rec
             .header
@@ -691,6 +747,38 @@ mod tests {
         let s = &r.scenarios[0];
         assert!(s.passed(), "{s:?}");
         assert_eq!((s.recordings[0].ticks, s.recordings[0].captured), (3, true));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_recording_that_continues_another_starts_where_it_left_the_port() {
+        let root = workspace(SCENARIO, RECORDING);
+        let header = RECORDING.lines().next().unwrap();
+        let from = |from: &str, initial: i32| {
+            header
+                .replace(r#""version":"0"}"#, &format!(r#""version":"0","details":{{"from":"{from}"}}}}"#))
+                .replace("4096", &initial.to_string())
+        };
+        let write = |name: &str, text: String| std::fs::write(root.join(format!("scenarios/walk/{name}.jsonl")), text);
+        // After a's first tick (RIGHT) and the released tick that starts b.
+        write(
+            "b",
+            format!("{}\n{}\n", from("a@1", 4196), r#"{"tick":1,"field":1,"pad":["RIGHT"],"values":{"x":4296}}"#),
+        )
+        .unwrap();
+        // After all of a: two ticks of RIGHT, one released.
+        write("c", format!("{}\n", from("a", 4296))).unwrap();
+        // Through b, which continues a.
+        write("d", format!("{}\n", from("b", 4296))).unwrap();
+        write("late", format!("{}\n", from("a@9", 0))).unwrap();
+        write("lost", format!("{}\n", from("z", 0))).unwrap();
+        let s = &Scenarios::new(&root, Walk::new).report().scenarios[0];
+        let failures = |n: &str| s.recordings.iter().find(|r| r.name == n).unwrap().failures.clone();
+        for n in ["a", "b", "c", "d"] {
+            assert!(failures(n).is_empty(), "{n}: {:?}", failures(n));
+        }
+        assert_eq!(failures("late"), ["a@9: it has 3 ticks"]);
+        assert!(failures("lost")[0].starts_with("the recording it continues, z: "), "{:?}", failures("lost"));
         let _ = std::fs::remove_dir_all(root);
     }
 

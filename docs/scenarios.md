@@ -288,9 +288,14 @@ code that ran, or none) is in the record's result: unpack it first
   so. A changed unit or description does not count.
 
 `--from OTHER` starts at the end of the scenario's recording OTHER instead
-of at its state, so a long play-through is recorded in parts. The
-recording's first tick still runs with the pad released, and its details
-name OTHER, which the determinism check replays first.
+of at its state, so a long play-through is recorded in parts; `--from
+OTHER@TICK` starts after OTHER's tick TICK, so a short recording starts
+near a moment of a play. The recording's first tick still runs with the
+pad released, and its details name `from`, which the determinism check
+replays first and the port's runner runs first (OTHER's ticks, through
+those it continues, each followed by the released tick that started the
+next). A held-out play is never a start: a recording from inside it
+would show what it holds.
 
 `psx scenario play ID --name NAME --request "…"` makes the recording from
 a person's play (guide topic run). The request joins the project's play

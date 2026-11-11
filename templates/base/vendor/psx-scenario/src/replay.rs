@@ -143,6 +143,10 @@ fn draw<P: Port>(
         return Err(format!("no launcher registered for scenario kind {}", scenario.kind));
     }
     port.launch(&scenario.kind, &scenario.parameters).map_err(|e| format!("the launcher failed: {e}"))?;
+    let lead = crate::runner::lead_in(recording.parent().unwrap_or(Path::new(".")), &rec)?;
+    for pad in &lead {
+        port.tick(pad);
+    }
     let ticks = rec.expand();
     summary["ticks"] = json!(ticks.len());
     let Some(first) = port.screen() else {
