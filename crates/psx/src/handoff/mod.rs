@@ -84,6 +84,10 @@ pub struct HandoffArgs {
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "is_false")]
     pub stock: bool,
+    /// With a scenario: hold it out (goal.toml's held_out): port_check judges it, you never see it.
+    #[arg(long, requires = "id")]
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub held_out: bool,
     /// A play's run_dir (the ticket's): report its progress or result instead of starting one.
     #[arg(long, conflicts_with_all = ["request", "id", "media", "bios", "from_state", "out", "verify", "expect"])]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,6 +144,7 @@ pub const TRIES: &str = ".psx/handoffs/tries";
 /// scenario a play from power-on whose run directory keeps the state and
 /// input. Queued and claimed as a request is, so it is answered, recorded and
 /// reported the same way; `port status` tells the agent the person played.
+#[allow(clippy::too_many_arguments)]
 pub fn person_play(
     ctx: &Ctx,
     what: &str,
@@ -148,10 +153,12 @@ pub fn person_play(
     from: Option<String>,
     adjust: Option<Vec<String>>,
     with_c: bool,
+    held_out: bool,
 ) -> crate::Result<PathBuf> {
     let what = what.trim();
     let request = if what.is_empty() { "Free play".to_string() } else { what.to_string() };
     let a = HandoffArgs {
+        held_out: held_out && id.is_some() && !with_c,
         request,
         description: id.as_ref().filter(|_| !what.is_empty()).map(|_| what.to_string()),
         id,
@@ -263,9 +270,14 @@ impl HandoffArgs {
                     "with a scenario the recording is made by replaying the input, which checks it: drop verify",
                 ));
             }
-        } else if self.name.is_some() || self.from.is_some() || self.description.is_some() || self.replace || self.stock
+        } else if self.name.is_some()
+            || self.from.is_some()
+            || self.description.is_some()
+            || self.replace
+            || self.stock
+            || self.held_out
         {
-            return Err(Error::invalid("name, from, description, replace and stock go with a scenario id"));
+            return Err(Error::invalid("name, from, description, replace, stock and held_out go with a scenario id"));
         }
         for x in self.adjust.iter().flatten() {
             if !["latch", "steady", "off", "fix"].contains(&x.as_str()) {
@@ -423,7 +435,14 @@ fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
         };
         if let queue::State::Answered(report) = r.state {
             queue::mark_read(dir);
-            return Ok((report.get("error").is_none(), report));
+            let ok = report.get("error").is_none();
+            // A held-out play reaches the agent without the play.
+            let root = dir.parent().filter(|q| q.ends_with(queue::DIR)).and_then(|q| q.parent()?.parent());
+            let report = match root {
+                Some(root) => crate::port::held_out::answer(root, report, r.args["held_out"] == true),
+                None => report,
+            };
+            return Ok((ok, report));
         }
         if std::time::Instant::now() >= deadline {
             let mut v = json!({"status": r.state.name(), "run_dir": dir,
@@ -849,6 +868,11 @@ fn record_play(
     let mut b = p.start(ctx, RECORD_TIMEOUT)?;
     let description = a.description.clone().or_else(|| Some(a.request.clone()));
     let (ok, mut v) = p.write(ctx, &mut b.m, frames as u32, events, description, RECORD_TIMEOUT)?;
+    if ok && a.held_out {
+        let rec = format!("{}/{}", p.id, p.name);
+        crate::port::held_out::set(&ctx.root, &rec, true)?;
+        v["catalogue"] = json!(format!("{rec} is held out (goal.toml's held_out): judged, not worked on"));
+    }
     if ok {
         let matches = b.m.save_state(b.media_id.clone()) == end_state;
         v["matches_play"] = json!(matches);
@@ -1424,6 +1448,7 @@ mod tests {
             wait: 0,
             person: false,
             with_c: false,
+            held_out: false,
             adjust: None,
         };
         let mut s = start(&a).unwrap();

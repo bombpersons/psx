@@ -1510,8 +1510,9 @@ function playNowCard() {
       ${N.withC ? "" : `<label for="pn-n">recording</label><input type="text" id="pn-n" value="${esc(N.name)}" placeholder="its name">`}` : ""}
     <label>adjustments</label><div class="adj">${adjBoxes(N)}</div>
     <label>code</label><div class="adj"><label title="every function whose C passed its last check runs in place of the original's"><input type="checkbox" id="pn-c" ${N.withC ? "checked" : ""}> with the agent's C</label><span class="quiet">${N.withC ? "a try: nothing is recorded, kept or sent to the agent" : "the original game"}</span></div>
+    ${N.scenario && !N.withC ? `<label>for</label><div class="adj"><label title="your plays are held out: psx judges the port on them and the agent never sees them; given to the agent, it works from the play"><input type="checkbox" id="pn-a" ${N.forAgent ? "checked" : ""}> give it to the agent</label><span class="quiet">${N.forAgent ? "a work recording: the agent works from it" : "held out: the port is judged on it, the agent never sees it"}</span></div>` : ""}
     <label for="pn-w">what you'll do</label><input type="text" id="pn-w" value="${esc(N.what)}" placeholder="${N.scenario ? "a sentence: the recording's description, and what the agent reads" : "optional, for the agent"}">
-    <span></span><div class="row" style="display:flex;gap:8px;align-items:center"><button class="b primary" id="pn-go">${N.withC ? "Try it" : "Play"}</button><span class="quiet">${N.withC ? "a play with the C is not the original game's, so it never becomes a recording" : N.scenario ? `becomes ${esc(N.scenario)}/${esc(N.name || "…")}; F12 to finish, as for a request` : "F12 to finish; the run keeps the state and your input"}</span></div>
+    <span></span><div class="row" style="display:flex;gap:8px;align-items:center"><button class="b primary" id="pn-go">${N.withC ? "Try it" : "Play"}</button><span class="quiet">${N.withC ? "a play with the C is not the original game's, so it never becomes a recording" : N.scenario ? `becomes ${esc(N.scenario)}/${esc(N.name || "…")}${N.forAgent ? "" : ", held out"}; F12 to finish, as for a request` : "F12 to finish; the run keeps the state and your input"}</span></div>
     <span></span><div class="err" id="pn-err"></div>
     <label>gamepad</label><div class="quiet">${padsNow()} <button class="b" id="pn-pad">Set up a gamepad</button></div></div></div>`;
 }
@@ -1543,6 +1544,7 @@ function playNowWire() {
   const on = (id, k, redraw) => { const e = $(id); if (e) e[e.tagName === "SELECT" ? "onchange" : "oninput"] = () => { N[k] = k === "p" ? +e.value : e.value; if (redraw) requestsView(); }; };
   for (const c of document.querySelectorAll(".playnow [data-adj]")) c.onchange = () => { (N.scenario ? N.adj : N.adjOn)[c.dataset.adj] = c.checked; requestsView(); };
   $("#pn-c").onchange = () => { N.withC = $("#pn-c").checked; requestsView(); };
+  if ($("#pn-a")) $("#pn-a").onchange = () => { N.forAgent = $("#pn-a").checked; requestsView(); };
   on("#pn-p", "p", true); on("#pn-s", "scenario", true); on("#pn-f", "from", false); on("#pn-n", "name", false); on("#pn-w", "what", false);
   $("#pn-pad").onclick = () => padSetup();
   $("#pn-go").onclick = async () => {
@@ -1553,7 +1555,7 @@ function playNowWire() {
     const adjust = Object.keys(adj).filter(k => adj[k] && (N.scenario || k !== "off"));
     // A try still names a recording, as a scenario play must; it is never written.
     const name = N.scenario ? (N.withC ? "try-" + stamp() : N.name) : "";
-    const r = await post(`/api/p/${N.p}/play`, {scenario: N.scenario, name, from: N.from, what: N.what || (N.withC ? "Try with the agent's C" : ""), adjust, with_c: !!N.withC});
+    const r = await post(`/api/p/${N.p}/play`, {scenario: N.scenario, name, from: N.from, what: N.what || (N.withC ? "Try with the agent's C" : ""), adjust, with_c: !!N.withC, for_agent: !!N.forAgent});
     if (r.error) { $("#pn-go").disabled = false; err.textContent = r.error.message; return; }
     if (!N.withC) N.name = stamp();
     N.what = "";
@@ -2219,7 +2221,7 @@ async function recordingsView(refresh) {
   const list = S.recs.scenarios.map(s => `<div class="sc">${esc(s.id)}</div>` + s.recordings.map(r => {
     const mark = !r.checked ? `<span class="mark none" title="not in the last port check">·</span>` : r.failures ? `<span class="mark fail" title="${r.failures} failures">✗</span>` : `<span class="mark pass">✓</span>`;
     const on = S.rec && S.rec.scenario === s.id && S.rec.name === r.name;
-    return `<div class="r ${on ? "on" : ""}" data-s="${esc(s.id)}" data-n="${esc(r.name)}">${mark}<span>${esc(r.name)}</span></div>`;
+    return `<div class="r ${on ? "on" : ""}" data-s="${esc(s.id)}" data-n="${esc(r.name)}">${mark}<span>${esc(r.name)}</span>${r.held_out ? ` <span class="quiet" title="judged by port check, never shown to the agent">held out</span>` : ""}</div>`;
   }).join("")).join("");
   const chk = S.recs.check?.commit ? `last port check: ${esc(String(S.recs.check.commit).slice(0, 10))}, ${esc(S.recs.check.at)}` : "no port check yet";
   if (!refresh || !$("#reclist")) {
@@ -2255,7 +2257,8 @@ function viewer() {
     : ch.failures.length ? `<div class="warnbox">port check at ${esc(String(ch.commit).slice(0, 10))} (${esc(ch.at)}): ${ch.failures.length} difference${ch.failures.length > 1 ? "s" : ""}${fd != null ? `, the first at tick ${fd}` : ""}<br>${ch.failures.map(f => `<span class="mono">${esc(f.text)}</span>`).join("<br>")}</div>`
     : `<div class="quiet" style="color:var(--ok)">The port matched every tick at ${esc(String(ch.commit).slice(0, 10))} (${esc(ch.at)}).</div>`;
   const hasPort = r.quantities.some(q => q.port);
-  $("#viewer").innerHTML = `<div class="card"><h2>${esc(r.scenario)} / ${esc(r.name)}</h2>
+  const heldOut = !!S.recs?.scenarios.find(s => s.id === r.scenario)?.recordings.find(x => x.name === r.name)?.held_out;
+  $("#viewer").innerHTML = `<div class="card"><h2>${esc(r.scenario)} / ${esc(r.name)} <button class="b" id="hold" title="${heldOut ? "the agent works from it from then on" : "port check judges the port on it; the agent never sees it"}">${heldOut ? "Give it to the agent" : "Hold it out"}</button></h2>
     <div>${esc(r.description || "")}</div><div class="quiet">${esc(r.moment || "")}${r.from ? ` · continues ${esc(r.from)}` : ""} · ${n} ticks${r.captured ? "" : " · an example, not captured"}</div>${checkLine}
     <div class="viewer-top" style="margin-top:8px"><div class="screens">
       <div><div class="slab">original · psx-core <select id="omode" title="the original's own code, or the agent's C (decomp/) in place of the functions whose last code check passed"><option value="">its own code</option><option value="c">with the agent's C</option></select></div><div class="screen"><img id="frame" alt=""><div class="msg" id="fmsg">replaying…</div></div></div>
@@ -2268,6 +2271,11 @@ function viewer() {
       ${ch?.failures.length && !hasPort ? `<div class="quiet">The port's own values show once its scenario report keeps them (a template update): until then, where it first differed.</div>` : ""}
     </div></div></div>
     <div class="card plots" id="plots">${r.quantities.map((q, k) => `<div class="q ${(ch?.failures || []).some(f => f.quantity === q.name) ? "diff" : ""}"><div class="lab"><div class="nm" title="${esc(q.description || "")}">${esc(q.name)}</div><div class="quiet">${esc(q.type)}${q.unit ? " · " + esc(q.unit) : ""}${q.tolerance ? " · ±" + esc(q.tolerance) : ""}</div><div class="v" id="v${k}"></div></div><div class="pl"><canvas data-k="${k}"></canvas><div class="cur"></div></div></div>`).join("")}</div>`;
+  $("#hold").onclick = async () => {
+    const x = await post(`/api/p/${S.cur}/held_out`, {scenario: r.scenario, name: r.name, on: !heldOut});
+    if (x.error) { alert(x.error.message); return; }
+    S.recs = null; await recordingsView(true); viewer();
+  };
   $("#pmode").value = S.portMode;
   $("#omode").value = S.withC ? "c" : "";
   $("#omode").onchange = e => { S.withC = e.target.value === "c"; S.replay = null; save(); pollReplay(S.recKey); showFrame(Math.max(1, S.tick)); };

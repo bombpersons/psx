@@ -298,7 +298,9 @@ next). A held-out play is never a start: a recording from inside it
 would show what it holds.
 
 `psx scenario play ID --name NAME --request "…"` makes the recording from
-a person's play (guide topic run). The request joins the project's play
+a person's play (guide topic run). `--held-out` adds it to goal.toml's
+`held_out`, and its answer leaves the play out; a play the person starts
+in psx web is held out unless they give it to the agent. The request joins the project's play
 queue and the call returns; the person plays it in `psx web` or with `psx
 play`, or declines it with a note. The play starts where `scenario
 record` starts counting fields, after the first tick. When the person

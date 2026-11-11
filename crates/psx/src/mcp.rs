@@ -183,7 +183,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::scenario::ScenarioAdjustCheckArgs>("scenario_adjust_check", "Measure psx's adjustments to the original: record each scenario's recordings again, stock and adjusted, from the same ticks; each quantity's first differing tick.").heavy(),
         def::<crate::scenario::ScenarioCheckArgs>("scenario_check", "In a port's workspace: the determinism check. Reach each scenario again with idle fields before its chain's last run, record its recordings again, compare per tick.").heavy(),
         def::<crate::scenario::ScenarioShowArgs>("scenario_show", "In a port's workspace: a recording's quantities per tick (0: the initial moment), each numeric one's change since the tick before; fixed as exact decimals unless raw. quantities, ticks (A..B) narrow it; text=true: a table; screens=true: both games' screens.").read_only(),
-        def::<crate::handoff::HandoffArgs>("scenario_play", "Ask the person to play: queues your request and returns a ticket at once; go on with other work: port_status lists it when they answer (recorded, or declined with a note). With id and name, play starts at the scenario's state (or the end of its recording from) and becomes that recording, with coverage. Without, from media or from_state (state.bin, input.json, note). See guide topic run.").screen(),
+        def::<crate::handoff::HandoffArgs>("scenario_play", "Ask the person to play: queues your request and returns a ticket at once; go on with other work: port_status lists it when they answer (recorded, or declined with a note). With id and name, play starts at the scenario's state (or where from starts) and becomes that recording. Without, from media or from_state (state.bin, input.json, note). See guide topic run.").screen(),
         def::<crate::port::PortInitArgs>("port_init", "Write a port's workspace in dest: the template, goal.toml, the catalogue, the disc and BIOS linked in, and this MCP server for the agent working there. See the guide."),
         def::<crate::template::TemplateUpdateArgs>("port_update", "Update the project's vendor/ files to this build (edited files and newer add-ons get a .psx-new copy) and move an older workspace to the current form. See guide topic setup."),
         def::<crate::template::PortAddArgs>("port_add", "Add a ready-made crate to the port's workspace under addons/: full (a window, a renderer with a PS1 and a modern look, the disc import and menus, wired into game/src/main.rs), shell, renderer, disc-import or menus. None is required. See guide topic setup."),
@@ -513,6 +513,12 @@ impl PsxServer {
             }
             respond(value, shot)
         };
+        // The person's held-out plays are judged, never shown to the agent.
+        if let Some(why) =
+            Some(name).filter(|n| *n != "message").and_then(|n| crate::port::held_out::refused(&root, n, &args))
+        {
+            return respond(Error::new("held_out", why).to_value(), None);
+        }
         let ctx = Ctx { root, cancel: Some(worker_cancel.clone()) };
         let (args, want_screen) = match prepare(tool, args) {
             Ok(r) => r,
@@ -824,8 +830,9 @@ mod tests {
         // clean-room tools went and port_status and port_next came; 68.5K from
         // 2026-10-29 with mechanic_check and mechanic_capture; 69K with port_check;
         // 71.6K with scenario_record and scenario_check (the guide pass trims later);
-        // mechanic_check and mechanic_capture went on 2026-10-30.
-        assert!(size <= 71_600, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // mechanic_check and mechanic_capture went on 2026-10-30; 71.7K from 2026-11-11 with
+        // scenario_play's held_out.
+        assert!(size <= 71_700, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

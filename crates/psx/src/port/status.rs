@@ -428,7 +428,13 @@ impl Facts {
             };
             work["failing"] = json!(failing.iter().take(10).map(of).collect::<Vec<_>>());
         }
-        let held_out = json!({"total": self.held_out.len(), "shown": "port status --plain, for the person"});
+        let mut held_out = json!({"total": self.held_out.len(), "shown": "port status --plain, for the person"});
+        // A port judged only on what it was built from cannot show it holds.
+        if self.held_out.is_empty() && !self.work.is_empty() {
+            held_out["ask"] = json!(
+                "none yet: ask for a play of the goal with scenario_play held_out=true, a route your work recordings don't take"
+            );
+        }
         json!({"work": work, "held_out": held_out})
     }
 
@@ -674,6 +680,11 @@ impl Facts {
         let plays = match &self.verdict {
             State::Current(_) => format!("{} held-out plays, {} passing", self.held_out.len(), passed(&self.held_out)),
             _ => format!("{} held-out plays", self.held_out.len()),
+        };
+        let plays = if self.held_out.is_empty() {
+            format!("{plays} (a play you start in psx web's Play now is held out)")
+        } else {
+            plays
         };
         s.push_str(&format!("recordings  {work} · {plays}\n"));
         let accounted = self.ran.len() - self.uncited.len();
@@ -1018,5 +1029,11 @@ mod tests {
             text.contains("1 held-out plays, 0 passing") && text.contains("held-out play failing: walk/play"),
             "{text}"
         );
+        assert!(v["recordings"]["held_out"].get("ask").is_none());
+        // With none, the agent is asked to get one and the person told how.
+        f.held_out = Vec::new();
+        let v = f.status();
+        assert!(v["recordings"]["held_out"]["ask"].as_str().unwrap().contains("scenario_play held_out=true"), "{v}");
+        assert!(f.plain().contains("0 held-out plays, 0 passing (a play you start in psx web's Play now is held out)"));
     }
 }

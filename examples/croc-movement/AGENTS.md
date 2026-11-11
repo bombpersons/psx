@@ -39,6 +39,15 @@ happens, and port it until they pass; then come back to the play to see it
 get further. A rule built from one moment of a long play rarely holds at the
 next, and the short recordings keep it checked once it works.
 
+Ask for a held-out play too (`scenario_play` with `held_out=true`), on a
+route your work recordings don't take, and another whenever a piece the
+person asked for works. `port_check` judges the port on it and
+`port_status` counts it, but you never see it: it shows the person whether
+the rules hold beyond the recordings they were built from. The person's
+own plays are held out unless they give them to you. When they tell you
+one fails, a rule was fitted to what you had: read its code again and
+record that case yourself; never try to see the held-out play.
+
 Choose recordings by what they show. `port_status` with `branches=true`
 lists the branches in the code the recordings ran that they take only one
 way: each is a case no recording has shown yet, and a short recording that

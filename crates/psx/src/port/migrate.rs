@@ -57,7 +57,7 @@ struct Recordings {
 
 /// `text` with the top-level `key` taken out (its value over several lines
 /// too) and, given `value`, set to it before the first table.
-fn set_key(text: &str, key: &str, value: Option<&toml::Value>) -> String {
+pub(super) fn set_key(text: &str, key: &str, value: Option<&toml::Value>) -> String {
     let mut lines: Vec<&str> = Vec::new();
     let (mut depth, mut in_table) = (0i32, false);
     for line in text.lines() {

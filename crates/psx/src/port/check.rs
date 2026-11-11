@@ -391,8 +391,8 @@ impl PortCheckArgs {
             v.pointers = super::pointer::pointers(ctx, &port, &to_point, POINTERS);
         }
         verdict::write(root, &v)?;
-        // Held-out plays are counted, not shown: port status shows them once
-        // the goal is reviewed.
+        // Held-out plays are counted, not shown: port status --plain shows
+        // them to the person.
         let results: BTreeMap<&String, &Vec<String>> =
             work.iter().filter_map(|r| Some((r, v.recordings.get(r)?))).collect();
         let passing = work.iter().filter(|r| v.of(r).is_empty()).count();

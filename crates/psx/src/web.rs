@@ -580,11 +580,24 @@ fn act(req: &Request, st: &State) -> crate::Result<Value> {
             // The adjustments to play with: a list (none checked: the stock game), or absent for the default.
             req.body["adjust"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()),
             req.body["with_c"] == true,
+            // The person's own play is held out unless they give it to the agent.
+            req.body["for_agent"] != true,
         )?;
         let live = crate::handoff::browser::Live::start(&p.root, &dir)?;
         st.plays.lock().unwrap().insert(dir.clone(), live);
         let id = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
         return Ok(json!({"status": "playing", "id": id, "try": req.body["with_c"] == true}));
+    }
+    // A recording held out from the agent, or given back to its work.
+    if let Some(i) = req.path.strip_prefix("/api/p/").and_then(|r| r.strip_suffix("/held_out")) {
+        let p = i.parse::<usize>().ok().and_then(|i| st.projects.get(i));
+        let p = p.ok_or_else(|| crate::Error::invalid(format!("project {i}: not shown")))?;
+        let (s, n) = (req.body["scenario"].as_str().unwrap_or(""), req.body["name"].as_str().unwrap_or(""));
+        if !recording_ok(s, n) {
+            return Err(crate::Error::invalid(format!("{s}/{n}: not a recording")));
+        }
+        let held_out = crate::port::held_out::set(&p.root, &format!("{s}/{n}"), req.body["on"] == true)?;
+        return Ok(json!({"status": "ok", "held_out": held_out}));
     }
     let (head, what) = req.path.rsplit_once('/').unwrap_or(("", ""));
     let (root, dir) = request_dir(head, st)?;
@@ -838,6 +851,7 @@ fn recordings(root: &Path) -> Value {
             .find(|s| s["id"] == id)
             .and_then(|s| s["recordings"].as_array()?.iter().find(|r| r["name"] == name).cloned())
     };
+    let held_out = crate::port::held_out::listed(root);
     let scenarios: Vec<Value> = crate::scenario::ids(root)
         .into_iter()
         .map(|id| {
@@ -855,7 +869,7 @@ fn recordings(root: &Path) -> Value {
                 .iter()
                 .map(|n| {
                     let r = reported(&id, n);
-                    json!({"name": n, "checked": r.is_some(),
+                    json!({"name": n, "checked": r.is_some(), "held_out": held_out.contains(&format!("{id}/{n}")),
                            "failures": r.as_ref().map_or(0, |r| r["failures"].as_array().map_or(0, Vec::len))})
                 })
                 .collect();

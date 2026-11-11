@@ -17,6 +17,7 @@ use crate::script_cover::Stretch;
 
 pub mod assets;
 pub mod check;
+pub mod held_out;
 mod init;
 pub mod manifest;
 pub(crate) mod migrate;
@@ -52,7 +53,7 @@ pub(crate) const GOAL_TOML: &str = "\
 description = \"\"
 assets = false  # what to extract: true (every disc file), false, or names: [\"format:level\", \"/MAPS/*.WLD\"] (formats/README.md)
 # review_lines = 800  # psx says a review is due once the code changed by this many lines since the last
-# held_out = []  # the person's plays, scenario/name: judged, never worked on
+# held_out = []  # plays held out from the agent, scenario/name: judged, never worked on
 ";
 
 /// The disc's assets a goal asks for: every file, or the files some names
@@ -146,8 +147,8 @@ pub struct Goal {
     /// [`REVIEW_LINES`] when unset.
     #[serde(default)]
     pub review_lines: Option<usize>,
-    /// The person's plays (scenario/name), held out from the work: judged
-    /// by a whole psx port check, never worked on.
+    /// Plays (scenario/name) held out from the work: judged by a whole psx
+    /// port check, never shown to the agent or worked on.
     #[serde(default)]
     pub held_out: Vec<String>,
     /// No longer read: the goal named features before recordings were the

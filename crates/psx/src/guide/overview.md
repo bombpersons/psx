@@ -61,10 +61,13 @@ Rules:
   one way (port_status branches=true) is a case none of them has shown:
   a short recording that takes it the other way checks the rule there.
   One no recording can reach goes in STATUS.md, with why.
-- Hold recordings out. The person's plays in goal.toml's held_out are
-  judged and counted, not shown; never work on them or tune to them. A
-  play the agent asked for is a work recording unless the person moves it
-  there.
+- Hold recordings out. A play in goal.toml's held_out is judged by
+  port_check and counted by port_status, never shown: psx refuses the
+  agent's calls that name it. Ask for one (scenario_play held_out=true)
+  on a route the work recordings don't take, and again when a piece
+  works. The person's own plays are held out unless they give them to the
+  agent; one the agent asked for without held_out is a work recording,
+  and the person can move any recording either way in psx web.
 - A recording that differs is not a distance to close: the rule for
   those quantities is not understood yet, or other code it runs is not
   ported. port_check names them, not where or by how much, and points
@@ -78,7 +81,7 @@ Rules:
 
 goal.toml holds the person's description, the disc's assets to extract
 (true, every file; false; or asset names, see Assets), review_lines and
-held_out (the person's plays, scenario/name). Every other recording under
+held_out (plays held out from the agent, scenario/name). Every other recording under
 scenarios/ is a work recording, and a scenario's toml names the assets
 its recordings need (assets = [...]).
 
@@ -175,7 +178,8 @@ scenario_play id name request asks the person to play from the
 scenario's state after its first tick (or where from starts). It queues;
 port_status lists it once played, recorded as scenario_record does.
 Write the request in game terms: the spot, the way to face, what should
-have happened. Without a scenario, a play reaches a hard place for
+have happened. held_out=true makes the play held out: its answer says
+only that it was recorded. Without a scenario, a play reaches a hard place for
 investigation (topic run).
 
 In the port, Game launches each scenario kind and observes the quantities
