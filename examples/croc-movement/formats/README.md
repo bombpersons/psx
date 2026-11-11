@@ -42,5 +42,4 @@ Each disc file is then unknown, format found, imported (an importer in
 checked (a passing importer test compared the import with what the game
 built from it, marked with `import::checking`) or unused. `psx port check`
 runs the importers on the disc and their tests; `psx port status` shows the
-files by state. When `goal.toml` has `assets = true`, `psx port next` asks
-for each file until every one is checked or unused.
+files by state.

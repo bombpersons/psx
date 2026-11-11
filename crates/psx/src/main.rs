@@ -248,8 +248,8 @@ enum PortAction {
     /// BIOS linked in, and psx's MCP server for the agent working there. --existing adds
     /// them to a template workspace made earlier.
     Init(port::PortInitArgs),
-    /// Replace untouched vendor/ files with this build's; report edits and
-    /// seeded changes.
+    /// Replace untouched vendor/ files with this build's, report edits and
+    /// seeded changes, and move an older workspace to the current form.
     Update(template::TemplateUpdateArgs),
     /// Add a ready-made crate under addons/ (full: a window, a renderer with a PS1 and a
     /// modern look, the disc import and menus, wired into game/src/main.rs).

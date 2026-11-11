@@ -6,17 +6,62 @@ emulator in disguise. What the game does is measured from the original with
 the psx toolkit (its MCP server is in `.mcp.json`); everything here is
 backed by that evidence.
 
-## The loop
+## How the work goes
 
-When the workspace has `goal.toml`, psx leads the work. Call `port_next`: it
-gives one item (what, for which recording when it is one's, why, and the
-fact that will show it done). Do it until that fact holds, commit, saying
-what changed, and call `port_next` again. `port_status` shows where the
-goal stands: its recordings, the code to port and its branches. An item for the
-person (Confirm, Stuck, Wait) waits for them: tell them and stop. A play
-request does not: it queues and `port_next` goes on to other work. psx's
-`guide` tool explains each item; `catalogue/README.md` has the
-catalogue's files. psx writes `.psx/verdicts/`; never edit them.
+`goal.toml` says what the person wants. The recordings of the original
+say what's right: `port_check` replays them against the port and gives,
+for each, the first difference (the original's value and the port's) and
+the code that wrote the value; `scenario_show` with `port=true` puts the
+port's values beside the original's around it. Passing
+them is the test. `port_status` is information: what passes, what the
+recordings ran and the port cites, plays waiting or answered. psx's
+`guide` tool is the reference for the commands. psx writes
+`.psx/verdicts/`; never edit them.
+
+What to do next is yours to choose: say what you picked and why, and go
+where the person points when they do. Keep `STATUS.md` current. The person
+decides when it's done, by playing it; `scenario_play` asks them to play
+something, and it queues, so carry on with other work.
+
+Take one thing per session: a recording's first difference, or one piece
+the person asked for. When it's done, or you've found its cause but can't
+fix it yet, commit, run `port_check`, write what you learned in `notes/`,
+update STATUS.md's "Next, and why" so a session that has never seen this
+work can start from it, and stop. The next session starts from STATUS.md.
+
+Ask the person for a play of the goal with `scenario_play` as soon as the
+first recordings work: one long play shows far more of the game than short
+recordings you make yourself. Use it as the map, not the work. When its
+first difference shows something not yet ported, record a few short
+recordings of that thing yourself, starting near it and varying how it
+happens, and port it until they pass; then come back to the play to see it
+get further. A rule built from one moment of a long play rarely holds at the
+next, and the short recordings keep it checked once it works.
+
+Recordings compare what a player could notice: where things are and which
+way they face, what's drawn (the camera, the animation playing and its
+frame, the model or sprite shown), and what the game shows or plays (the
+HUD's numbers, a sound starting). Add each to `glossary/` and the
+scenarios' `[compare]` as soon as it can be measured, and refresh the
+recordings, so `port_check` compares it from then on. A recording that
+starts failing because of it has found work to do.
+
+The original's counters, timers, flags, phases and script variables are
+how it gets there, not what the port must match, so they aren't compared:
+the port can reach the same results its own way. To learn a rule, watch
+them in the original (debugger watches, the `ram_*` tools) while you trace,
+then check what you wrote through what a player could notice. When unsure,
+ask whether a player could tell the difference by watching and listening.
+
+Commit as you go and run `port_check` on the commits. It judges only a
+commit with no uncommitted changes, and `cargo test` doesn't change what
+`port_status` shows.
+
+Recordings don't compare the picture. When what's drawn has changed, run
+`port_status` with `screens=true`: it scores how far the port's picture is
+from the original's and names the worst moment, for `scenario_show` with
+`screens` to show you. Things not drawn yet always count, so watch the
+trend.
 
 ## Layout
 
@@ -103,15 +148,11 @@ yours to decide. What the tools rely on besides the above:
 
 ## The review
 
-Each time the goal comes to match its recordings, again when it is
-finished (its branches resolved), and when much of the code has changed
-since the last review, the code is reviewed by someone who did not
-write it: a sub-agent or a fresh session, given the brief
-`port_next` prints (the whole code the first time, then what changed
-since). The recordings already check what the code does; the
-review asks whether you would write a new game like this, and its
-findings say how to restructure it. They go in `review.md`; answer each
-one: done (with `port_check` passing again), or kept and why.
+When much of the code has changed, `port_check` says a review is due and
+`port_status` gives the brief for someone who didn't write it: a sub-agent
+or a fresh session. The recordings already check what the code does; the
+review asks whether you would write a new game like this. Findings go in
+`review.md`, each answered: done, or kept and why. Nothing waits on it.
 
 ## Beyond the recordings
 

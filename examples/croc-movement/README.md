@@ -46,18 +46,21 @@ next` gave one item at a time, in this order:
 7. **Play:** the person played each feature freely; those recordings
    (`play_*`) were held out, judged only once the code was reviewed.
 
-psx has since dropped features: the recordings are the unit, and the code
-to port is what they run. `psx port update` moved this workspace: the
-entries' won't-reach branches to `catalogue/wont_reach.toml`, the
-person's plays to `goal.toml`'s `held_out`, and the entries themselves
-out (git keeps them; `F-0004`, outside the goal, went with them).
+psx has since dropped features, and then `port next` itself: the
+recordings are the unit, the agent chooses what's next and keeps
+`STATUS.md`, and the person says when it's done by playing it. `psx port
+update` moved this workspace both times: the entries' won't-reach branches
+went to `catalogue/wont_reach.toml` and from there to the end of
+`STATUS.md`, the person's plays to `goal.toml`'s `held_out`, and the
+entries, the confirmation and `wont_reach.toml` out (git keeps them;
+`F-0004`, outside the goal, went with them).
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `goal.toml` | The goal, the person's held-out plays and their confirmation, with the confirmed `wont_reach` branches |
-| `catalogue/` | `wont_reach.toml`: the branches no recording can reach, and why |
+| `goal.toml` | The goal and the person's held-out plays |
+| `STATUS.md` | Where the port stands, and the branches no recording reaches, with why |
 | `glossary/` | The quantities compared (`croc_x`, `croc_vertical_speed`, ...) and where the original keeps them |
 | `scenarios/` | The start state's scenario and its recordings: Croc's quantities and the pad per tick (`.jsonl`), and the branches each run took (`.coverage.json`) |
 | `game/src/lib.rs` | `Game`, the port psx drives: the tick's steps in the original's order, at its 25 Hz |
@@ -77,7 +80,7 @@ No disc data: the recordings hold the quantities the glossary names, the
 coverage files hold the addresses of branches and which way they went, and
 `game/assets/` holds constants cited from the code. The save states
 (`.psx/`), the disc and the BIOS stay out of git. To carry on with psx
-(`psx port status`, `psx port next`), put your own disc in `media/` and a
+(`psx port status`, `psx port check`), put your own disc in `media/` and a
 BIOS in `bios/`, and rebuild the states from `notes/states/` with `psx
 states rebuild`.
 

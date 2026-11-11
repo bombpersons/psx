@@ -1,6 +1,6 @@
 # psx
 
-**Point an AI agent at a PlayStation game. Get back how it works, and a Bevy game that plays the same.**
+**Point an AI agent at a PlayStation game. Get back how it works, and a native port that plays the same.**
 
 psx is a PS1 reverse-engineering toolkit built for agents. It hands them an emulator they can
 interrogate, disc and asset decoders, Ghidra on tap and a game template with the PS1 look, all as
@@ -18,7 +18,7 @@ Most of what's here exists because an agent tried to use it and got stuck somewh
 | *How high is the jump, frame by frame?* | `sample` the value into a CSV while replaying the input. |
 | *Is my theory right?* | `poke` a value at a chosen frame and compare against an untouched run. |
 | *Where did this texture, model or sound come from?* | `gpu_frame`, `assets_scan`, `trace_spu` and `trace_cd` connect screen and speaker back to RAM and the disc file. |
-| *Does my rebuild play the same?* | Replay the same input in the Bevy template and `compare` every tick. |
+| *Does my rebuild play the same?* | `port_check` replays recordings of the original through the port and gives the first difference. |
 
 ## One loop, start to finish
 
@@ -59,25 +59,26 @@ The full story is in the [write-up](research/case-study-megaman8.md).
   cross-references, PsyQ library naming.
 - **Ghidra.** Pseudocode and callers for any address, from an EXE or a RAM snapshot; rename
   functions and export verified names back into traces.
-- **A Bevy game template** with the PS1 look: vertex wobble, affine textures, 15-bit colour,
-  dithering and PS1 blend modes, while game code stays plain Bevy. Includes trajectory tests
-  against the original, controller rebinding and its own developer MCP for stepping, querying
-  and screenshotting the game headless, and takes template updates in place.
-- **Porting by goals and features.** You say which features of the game you want; psx keeps
-  the port's state on disk and tells the agent the one thing due next. See below.
+- **A port template** in plain Rust with no engine, and add-ons when the port wants them: a
+  window, a renderer with a PS1 look and a modern one, the disc import on start-up, menus.
+  It takes template updates in place.
+- **Porting by recordings.** Recordings of the original say what's right and `port check`
+  gives the first difference; the agent picks what's next and you point it. See below.
 
 ## Porting a game
 
-`psx port init DEST --media GAME.cue` writes a port's workspace: the Bevy template, a
-`goal.toml` for the features you want, a `catalogue/` of the game's features with their
-dependencies, the disc and BIOS linked in, and psx's MCP server for the agent working there.
-The agent proposes the catalogue; you confirm the goal's list with `psx port confirm --yes`.
-From then on, an ordinary interactive session (Claude Code, Codex) in the workspace starts with
-`port_next`: the one item due now, for which feature, and the fact that will show it done.
-`psx port status --plain` shows every feature of the goal by stage. One agent investigates
-and ports, with full access to psx and the original's code; correctness is checked
-mechanically against recordings of the original. The design is in
-[docs/port-design.md](docs/port-design.md).
+`psx port init DEST --media GAME.cue` writes a port's workspace: the template, a `goal.toml`
+for what you want in your words, a `STATUS.md` the agent keeps, the disc and BIOS linked in,
+and psx's MCP server for the agent working there. An ordinary interactive session (Claude
+Code, Codex, OpenCode) in the workspace takes one thing at a time: a recording's first
+difference, or a piece you asked for. It commits, runs `port_check`, writes down what's next
+and why in `STATUS.md`, and stops; the next session starts from there.
+
+psx says what's right: recordings of the original, replayed tick by tick through the port,
+compared on what a player could notice. You give direction, and you say when it's done by
+playing it: a play the agent asks for becomes a map of what's missing, and plays you list in
+`goal.toml`'s `held_out` are judged without the agent seeing them (`psx port status --plain`).
+The plan behind this is [docs/simple-port-plan.md](docs/simple-port-plan.md).
 
 ## See it in action
 
@@ -112,8 +113,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/bom
 The installer checks the download's SHA-256, puts `psx` in `~/.local/bin` (Windows:
 `%LOCALAPPDATA%\psx\bin`, added to your PATH) and fetches the PsyQ signatures `psx code symbols`
 uses. Run it again to update. Building from source needs Rust 1.89+:
-`cargo install --locked --git https://github.com/bombpersons/psx psx`. Porting with the Bevy
-template needs Rust 1.97.1+ either way.
+`cargo install --locked --git https://github.com/bombpersons/psx psx`.
 
 Then add a BIOS, either your own dump or a checksum-verified download of a known image (pick the
 region of your games):
@@ -142,9 +142,8 @@ psx guide --topic run
 ```
 
 Start a port from the template (pick the tick rate from the original's main loop; the region
-comes from the disc). It is a workspace with the template's own crate, the game itself, the
-importers and the glossary, plus the port's goal and catalogue; `psx port update` brings in
-later template fixes:
+comes from the disc). It is a workspace with the game itself, the importers and the glossary,
+plus the port's goal and status; `psx port update` brings in later template fixes:
 
 ```bash
 psx port init ../my-port --media "media/Some Game.cue" --fields-per-tick 2
@@ -153,13 +152,13 @@ cd ../my-port && cargo run
 
 To watch the ports while agents work on them, `psx web ../my-port` serves a page on
 http://127.0.0.1:7878: what needs you, the port's progress over time, a live log of every psx
-call the agents make (each drawn as a card: screens, plots, code, the next item), a chat with
+call the agents make (each drawn as a card: screens, plots, code), a chat with
 the agent that reaches it with its next call without interrupting it, the agent's requests to
 play a part of the game (played in the page or a window, or declined with a note), and each
 recording replayed frame by frame with its values plotted beside the port's, and the port
 playing the same recording beside it. Its Reviews tab has every review round, each finding
-with its answer and the changes it read, and the reviewers' reports written for you alone; its Stats tab, the features by stage over
-time, the agents' activity, each feature's commits on a timeline and where the time went. `psx play` answers
+with its answer and the changes it read, and the reviewers' reports written for you alone; its Stats tab, recordings passing
+and code covered over time, the agents' activity, the commits and where the time went. `psx play` answers
 the same requests from a terminal.
 
 ## Honest limits
@@ -171,7 +170,7 @@ Custom formats need a parser. Every finding is evidence to check, not a guarante
 ## More
 
 - `psx guide` and `psx <command> --help`: every command and flag.
-- [docs/port-design.md](docs/port-design.md): porting by recordings.
+- [docs/simple-port-plan.md](docs/simple-port-plan.md): porting by recordings, with the person giving direction.
 - [templates/base](templates/base/README.md): the port template.
 - [docs/ghidra-integration.md](docs/ghidra-integration.md): Ghidra analysis and symbol export.
 - [docs/compatibility.md](docs/compatibility.md): how far each game gets on the native core, and known emulation issues.

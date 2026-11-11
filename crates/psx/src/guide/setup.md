@@ -125,6 +125,9 @@ change, then delete it) and puts changed seeded files under
 .psx/template-update/ to merge; removed_upstream lists seeded files the
 template dropped. A workspace from the older Bevy template keeps its
 psx-bevy/ as its own code (released counts the files no longer tracked).
+An older workspace moves to the current form (moved): goal.toml loses
+features and confirmed, and catalogue/questions.md's questions and
+wont_reach.toml's branches go to the end of STATUS.md.
 Keep each project's cargo target directory to itself.
 
 ## Add-ons

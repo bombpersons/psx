@@ -16,8 +16,8 @@ recorded, not that the game reached gameplay or that a hypothesis holds.
 psx port init DEST --media GAME.cue writes the workspace: a template in Rust
 (game/, a psx_scenario Port with no engine; tools/import/, glossary/,
 vendor/), which the port may use or replace (psx-port.toml names its
-commands; topic setup), goal.toml, catalogue/, formats/, the disc and BIOS
-linked in, .mcp.json for psx, and git. Pass fields_per_tick from the original's main
+commands; topic setup), goal.toml, STATUS.md, catalogue/, formats/, the
+disc and BIOS linked in, .mcp.json for psx, and git. Pass fields_per_tick from the original's main
 loop; the region comes from the disc. Its AGENTS.md says what the port's
 code is held to; this guide says how the work goes.
 
@@ -198,7 +198,7 @@ review is due and port_status gives review_due: why, and the brief for a
 reviewer who did not write the code. Nothing waits on it. It asks whether one
 would write a new game like this, and whether the recordings show all the
 description asks; the reviewer also files a report for the person alone
-(report). review.md: TOML front matter (commit, matching, finished) between
+(report). review.md: TOML front matter (commit = the commit reviewed) between
 +++ lines, then one ## heading per finding, each answered with an
 **Answer:** line: done, with port_check passing again, or kept and why.
 

@@ -4,7 +4,7 @@
 //! right turn on the ground and strafe in the air, L1 and R1 sidestep while
 //! Croc moves on the ground and turn in the air.
 //!
-//! Not ported (wont_reach on the flat stand-in floor): slippery surfaces,
+//! Not ported (no recording reaches them on the flat stand-in floor): slippery surfaces,
 //! slides, walls, platforms carrying Croc, the analog stick, and the input
 //! lock of cutscenes. Standing still, L1 and R1 do nothing here: the
 //! original's standing sidestep is the animation's own motion (F-0004).

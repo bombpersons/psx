@@ -216,9 +216,10 @@ pub fn run(root: &Path, dry_run: bool) -> crate::Result<Value> {
     }
     // goal.toml: no features or confirmation, the person's plays held out.
     let mut text = set_key(&set_key(&goal_text, "features", None), "confirmed", None);
-    // The opening comment, when it tells of features, becomes the template's.
+    // The opening comment, when it tells of features or the confirmation,
+    // becomes the template's.
     let head = text.lines().take_while(|l| l.trim_start().starts_with('#')).count();
-    if text.lines().take(head).any(|l| l.contains("feature")) {
+    if text.lines().take(head).any(|l| l.contains("feature") || l.contains("confirm")) {
         let template: Vec<&str> = super::GOAL_TOML.lines().take_while(|l| l.starts_with('#')).collect();
         let rest: Vec<&str> = text.lines().skip(head).collect();
         text = format!("{}\n{}\n", template.join("\n"), rest.join("\n"));
@@ -350,8 +351,7 @@ mod tests {
 
     #[test]
     fn a_workspace_from_port_next_moves_its_questions_and_branches_to_status() {
-        let goal =
-            "description = \"walk\"\nheld_out = [\"walk/p\"]\nconfirmed = { at = \"t\", held_out = [\"walk/p\"] }\n";
+        let goal = "# The person confirms it with `psx port confirm --yes`.\ndescription = \"walk\"\nheld_out = [\"walk/p\"]\nconfirmed = { at = \"t\", held_out = [\"walk/p\"] }\n";
         let (d, _) = workspace(
             goal,
             &[
@@ -373,7 +373,7 @@ mod tests {
         assert!(status.contains("- 0x80010010: debug only\n"), "{status}");
         assert_eq!(
             std::fs::read_to_string(d.0.join(GOAL)).unwrap(),
-            "description = \"walk\"\nheld_out = [\"walk/p\"]\n"
+            "# What the person wants from this port, in their words.\ndescription = \"walk\"\nheld_out = [\"walk/p\"]\n"
         );
         assert_eq!(run(&d.0, false).unwrap(), Value::Null);
     }

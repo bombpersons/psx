@@ -164,6 +164,18 @@ teach `port update` to move a workspace over, and bring psx web, the guide,
 the C and Croc examples and their tests along. Old `goal.toml`s need to keep
 loading until they're moved.
 
+Done on branch `step3-remove`. `port next` and `port confirm` are gone from
+the command line too, with the goal's states, the shares, the loop guard,
+sticky Fix, `wont_reach.toml` and `questions.md`; `next.rs` became
+`status.rs`, keeping the facts. Old `goal.toml`s with `confirmed` and old
+reviews with `matching`/`finished` still load, unread, with a problem that
+says to run `port update`, which takes `confirmed` out and moves questions
+and won't-reach branches to the end of `STATUS.md`. Held-out plays are
+counted for the agent and judged in `port status --plain` for the person,
+no longer waiting on a "reviewed" state. The Croc example was moved with
+`port update`. Added from the trial: AGENTS.md and the guide say a long
+play is the map, ported from short recordings of what it shows.
+
 ### 4. Then the candidates, one at a time
 
 Only those the trial asked for.

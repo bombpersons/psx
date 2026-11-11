@@ -8,7 +8,7 @@
 //! Not ported: bounce pads (script global 69: the jump test jumps 4600
 //! with jump pressed, else 3450), and the bounce off a surface type 4
 //! (lava) floor, a fixed JUMP 2300 that is the only thing turning the
-//! variable height off (script 0x1A76; wont_reach 0x8002D940). Nor is the
+//! variable height off (script 0x1A76; no recording reaches 0x8002D940). Nor is the
 //! jump test's other condition: it is skipped while Croc slides on a
 //! surface of type 8 (MOVESTATE 5, `Gait::SlidingSteep`; sub 0x1803), so
 //! sliding neither jumps nor keeps a press. No such surface on the flat
