@@ -268,7 +268,9 @@ code that ran, or none) is in the record's result: unpack it first
 - **Each later line is one tick.**
   - `field` is the field the tick ended in, counted from the field after
     the first tick (field 0, the input's frame 0): the original's schedule. Two ticks in one field, or a field with
-    none, is the original falling behind.
+    none, is the original falling behind. A tick runs the fields after
+    the tick before's through its own; latched, input from frame F is
+    first read by the tick after the one field F is in.
   - `pad` holds the buttons held during that field, when they changed.
   - `analog` is whether the pad was in analog mode, when it changed
     (digital at the start): what the game read in the pad's ID each poll,
@@ -290,7 +292,8 @@ code that ran, or none) is in the record's result: unpack it first
 `--from OTHER` starts at the end of the scenario's recording OTHER instead
 of at its state, so a long play-through is recorded in parts; `--from
 OTHER@TICK` starts after OTHER's tick TICK, so a short recording starts
-near a moment of a play. The recording's first tick still runs with the
+near a moment of a play: its first tick is OTHER's tick TICK+1, so its
+tick N is OTHER's tick TICK+1+N. The recording's first tick still runs with the
 pad released, and its details name `from`, which the determinism check
 replays first and the port's runner runs first (OTHER's ticks, through
 those it continues, each followed by the released tick that started the

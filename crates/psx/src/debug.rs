@@ -705,6 +705,13 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
         Some(p) => Some(crate::run_native::resolve(p, &o.scopes)?.0),
         None => None,
     };
+    // The first stop reached ends the go: tick is ticks=1, so with ticks it
+    // would always stop at the next tick.
+    if a.tick && a.ticks.is_some_and(|n| n > 1) {
+        return Err(Error::invalid(
+            "debug_go: tick stops at the next tick end (ticks=1); for more, give ticks alone",
+        ));
+    }
     let until = a.until.iter().map(|s| crate::until::parse(s)).collect::<Result<Vec<_>, _>>();
     let stops = Stops {
         pc,

@@ -158,12 +158,16 @@ the quantities that changed. The sticks are the raw bytes the game read
 (the game's switch, or ANALOG) before they move; the port reads them as
 Pad::sticks and Pad::analog.
 Recordings are latched, steady and fixed unless stock (topic run).
+Tick N's fields are those after tick N-1's field through its own; latched,
+input from frame F is first read by the tick after the one field F is in,
+so a press for tick N starts within tick N-1's fields.
 Beside it, <name>.coverage.json keeps what the
 original ran as the inventory's code (no instructions, so it is committed):
 take code_inventory first, and unpack compressed overlays first (topic
 code). from=NAME starts at the end of another recording of the scenario,
 to split a long route; from=NAME@TICK starts after its tick TICK, to
-record near a moment of a play. Either way the first tick runs with the
+record near a moment of a play: its first tick is NAME's tick TICK+1, so
+its tick N is NAME's tick TICK+1+N. Either way the first tick runs with the
 pad released, and the port reaches the start by running those ticks
 first. A held-out play is never a start. scenario_show reads a recording
 per tick, with each numeric quantity's change since the tick before.
