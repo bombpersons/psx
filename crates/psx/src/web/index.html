@@ -87,10 +87,7 @@ nav.sub { display: flex; gap: 4px; margin-bottom: 12px; }
 .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
 @media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
-.next .item { font-size: 18px; font-weight: 600; }
 .tab .mail { font-size: 11px; background: var(--act); color: #fff; border-radius: 9px; padding: 0 5px; }
-.who { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: var(--chip); margin-left: 6px; vertical-align: middle; }
-.who.person { background: var(--act); color: #fff; }
 details summary { cursor: pointer; color: var(--dim); margin-top: 6px; }
 .att { padding: 6px 0 6px 10px; border-left: 3px solid var(--line); margin: 4px 0; }
 .att.act { border-left-color: var(--act); } .att.warn { border-left-color: var(--warn); } .att.info { border-left-color: var(--info); }
@@ -402,17 +399,16 @@ function worst(i) {
   const a = S.overview[i]?.attention || [];
   return a.reduce((w, x) => LEVEL[x.level] > (LEVEL[w] || 0) ? x.level : w, "");
 }
-// The projects, each with its next item and what needs the person, and
-// the play requests across them.
+// The projects, each with what needs the person, and the play requests
+// across them.
 function tabs() {
   const queued = (S.requests?.waiting || []).filter(r => r.state === "queued").length;
   const proj = (p, i) => {
-    const o = S.overview[i] || {}, n = o.status?.next;
+    const o = S.overview[i] || {};
     const att = (o.attention || []).filter(a => a.level !== "info").sort((a, b) => LEVEL[b.level] - LEVEL[a.level]);
     const mail = S.msgs[i]?.unread && !(i === S.cur && S.chatOpen) ? `<span class="mail" title="unread messages from the agent">✉ ${S.msgs[i].unread}</span>` : "";
     return `<div class="proj ${i === S.cur && S.view !== "requests" ? "on" : ""}" data-i="${i}" title="${esc(p.root)}">
       <div class="pn"><span class="dot ${worst(i)}"></span><b>${esc(p.name)}</b>${mail}</div>
-      ${n?.item ? `<div class="pi">next: ${esc(n.item)}${n.recording ? " " + esc(n.recording) : ""}${n.who === "person" ? " · yours" : ""}</div>` : ""}
       ${att.map(a => `<div class="pa ${a.level}" data-v="${esc(a.view || "overview")}" title="${esc(a.detail)}">${esc(a.title)}</div>`).join("")}</div>`;
   };
   $("#side").innerHTML = `<button class="proj ${S.view === "requests" ? "on" : ""}" id="reqtab" title="play the game, and the agents' play requests across projects"><div class="pn"><b>Play</b><span class="n">${queued || ""}</span></div></button>
@@ -482,15 +478,7 @@ function overview() {
   } else if (st?.error) {
     h += `<div class="ovgrid"><div class="col"><div class="card"><h2>Status</h2><div class="att act">${esc(st.error.message)}</div></div></div><div class="col">${recent}</div></div>`;
   } else if (st) {
-    const n = st.next || {};
-    const next = !n.item ? "" : `<div class="card next"><h2>Next</h2>
-      <div><span class="item">${esc(n.item)}${n.recording ? " " + esc(n.recording) : ""}</span><span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who)}</span></div>
-      <div style="margin-top:6px">${esc(n.why)}</div>
-      ${n.how ? `<details><summary>how</summary><div style="margin-top:4px">${esc(n.how)}</div></details>` : ""}
-      ${n.done_when ? `<details><summary>done when</summary><div style="margin-top:4px">${esc(n.done_when)}</div></details>` : ""}
-      ${st.guard && st.guard.item.trim() === `${n.item} ${n.recording || ""}`.trim() ? `<div class="quiet" style="margin-top:6px">port next gave “${esc(st.guard.item.trim())}” ${st.guard.count}× in a row (Stuck at ${st.guard.limit})</div>` : ""}
-    </div>`;
-    h += `<div class="ovgrid"><div class="col">${next}<div class="card"><h2>Attention</h2>${attentionList(o)}</div></div>
+    h += `<div class="ovgrid"><div class="col"><div class="card"><h2>Attention</h2>${attentionList(o)}</div></div>
       <div class="col">${progressCard(o, st)}${recent}</div><div class="wide">${recordingsCard(st)}</div></div>`;
   }
   $("#view").innerHTML = h;
@@ -514,36 +502,35 @@ function attentionList(o) {
   return (a.length ? a.map(x => `<div class="att ${x.level}"><div>${esc(x.title)}</div><div class="d">${esc(x.detail)}</div></div>`).join("") : `<div class="quiet">Nothing needs you.</div>`) + last;
 }
 function progressCard(o, st) {
-  const sh = st.shares || {}, w = st.recordings?.work || {};
-  const share = k => sh[k] ? `${num(sh[k].n)}/${num(sh[k].of)}` : "–";
+  const w = st.recordings?.work || {}, c = st.code || {}, b = st.branches || {};
+  const of = (n, t) => t != null ? `${num(n ?? 0)}/${num(t)}` : "–";
   const tiles = [
     [`${w.pass ?? "–"}/${w.total ?? 0}`, "work recordings pass"],
-    [share("code_accounted"), "code cited or not ported"],
-    [share("branches_resolved"), "branches resolved"],
+    [of(c.ran - c.uncited, c.ran), "code cited or not ported", "functions the work recordings ran, cited in game/ or tools/ or listed in not_ported.toml"],
+    [of(b.all_ways, b.total), "branches run both ways"],
     [(st.problems || []).length, "problems"],
     [st.review?.state ?? "–", "review"],
   ];
   const p = o.progress || [];
   return `<div class="card"><h2>Progress</h2><div class="tiles">${tiles.map(([n, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div>
-    ${p.length > 1 ? `<div class="grid2"><div><div class="quiet">work recordings passing, of all</div><canvas class="chart" id="ch-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="ch-br"></canvas></div></div>
-    <div class="quiet" style="margin-top:4px">${p.length} changes since ${fmtDate(p[0].t)} · each line is a port status or port next that saw the standing change</div>`
-    : `<div class="quiet">History builds up as port status and port next see the standing change.</div>`}</div>`;
+    ${p.length > 1 ? `<div class="grid2"><div><div class="quiet">work recordings passing, of all</div><canvas class="chart" id="ch-rec"></canvas></div><div><div class="quiet">branches run both ways, of all</div><canvas class="chart" id="ch-br"></canvas></div></div>
+    <div class="quiet" style="margin-top:4px">${p.length} changes since ${fmtDate(p[0].t)} · each line is a port status that saw the standing change</div>`
+    : `<div class="quiet">History builds up as port status sees the standing change.</div>`}</div>`;
 }
-// The goal's recordings by state, its code and its three shares.
+// The goal's recordings by state, the code they ran and its branches.
 function recordingsCard(st) {
-  const r = st.recordings || {}, w = r.work || {}, h = r.held_out || {}, sh = st.shares || {}, c = st.code || {};
+  const r = st.recordings || {}, w = r.work || {}, h = r.held_out || {}, c = st.code || {}, b = st.branches || {};
   const pct = (a, t) => t ? Math.round(100 * a / t) : 0;
-  const bar = (l, s, t) => s ? `<tr title="${esc(t)}"><td class="quiet">${esc(l)}</td><td><div class="bar"><i style="width:${pct(s.n, s.of)}%"></i></div></td><td class="num">${num(s.n)}/${num(s.of)}</td></tr>` : "";
+  const bar = (l, n, of, t) => of ? `<tr title="${esc(t)}"><td class="quiet">${esc(l)}</td><td><div class="bar"><i style="width:${pct(n, of)}%"></i></div></td><td class="num">${num(n)}/${num(of)}</td></tr>` : "";
   const rows = [
     ["work", !w.total ? "none yet" : w.pass == null ? `${num(w.total)}, not all checked at this commit` : `${w.pass} passing, ${w.fail ?? 0} failing, of ${num(w.total)}`],
-    ["held out", h.total ? (h.pass != null ? `${h.pass} passing, of ${h.total}` : `${h.total}, shown ${esc(h.shown || "")}`) : "none"],
+    ["held out", h.total ? `${h.total}, judged in ${esc(h.shown || "port status --plain")}` : "none"],
     ["code", c.ran != null ? `${num(c.ran)} functions ran: ${num(c.cited)} cited, ${num(c.not_ported)} not ported, ${num(c.uncited)} cited nowhere` : "–"],
-    ["questions", (st.questions || []).length || "none"],
   ];
   return `<div class="card"><h2>Recordings</h2><table>${rows.map(([k, v]) => `<tr><td class="quiet">${k}</td><td colspan="2">${v}</td></tr>`).join("")}
-    ${bar("recordings passing", sh.recordings_passing, "work passing, and held-out passing once the goal is reviewed")}
-    ${bar("code accounted", sh.code_accounted, "functions the work recordings run, cited in game/ or tools/ or listed in not_ported.toml")}
-    ${bar("branches resolved", sh.branches_resolved, "branches of the code to port, run both ways or in wont_reach.toml")}</table>
+    ${bar("work recordings passing", w.pass ?? 0, w.total, "work recordings passing at this commit")}
+    ${bar("code accounted", (c.ran ?? 0) - (c.uncited ?? 0), c.ran, "functions the work recordings run, cited in game/ or tools/ or listed in not_ported.toml")}
+    ${bar("branches run both ways", b.all_ways ?? 0, b.total, "conditional branches of the code to port the recordings ran both ways")}</table>
     ${(w.failing || []).length ? `<div class="warnbox">${w.failing.map(esc).join("<br>")}</div>` : ""}</div>`;
 }
 function drawProgress(o) {
@@ -551,7 +538,7 @@ function drawProgress(o) {
   if (p.length < 2) return;
   const series = (c, get) => chart(c, p.map(x => x.t), get);
   series($("#ch-rec"), [[x => x.recordings?.pass, css("--st5")], [x => x.recordings?.total, css("--st0")]]);
-  series($("#ch-br"), [[x => x.branches?.resolved, css("--st1")], [x => x.branches?.total, css("--st0")]]);
+  series($("#ch-br"), [[x => x.branches?.all_ways ?? x.branches?.resolved, css("--st1")], [x => x.branches?.total, css("--st0")]]);
   function chart(canvas, ts, lines) {
     if (!canvas) return;
     const ctx = setup(canvas), W = canvas.clientWidth, H = canvas.clientHeight;
@@ -1013,13 +1000,13 @@ const CARDS = {
     }).join("");
   },
   port_status(r) {
-    const w = r.recordings?.work || {}, sh = r.shares || {};
-    const share = k => sh[k] ? `${num(sh[k].n)} / ${num(sh[k].of)} <span class="quiet">${Math.round(pct(sh[k].n, sh[k].of))}%</span>` : "–";
-    return nextBlock(r.next || {}) + stats([stat(r.state || "–", "goal"), stat(`${w.pass ?? "–"} of ${num(w.total || 0)}`, "work recordings passing"), stat((r.problems || []).length, "problems"), stat(r.review?.state || "–", r.review?.lines != null ? `review · ${num(r.review.lines)} of ${num(r.review.review_lines)} lines` : "review")]) +
-      tbl(["share", ""], [["recordings passing", share("recordings_passing")], ["code cited or not ported", share("code_accounted")], ["branches resolved", share("branches_resolved")]]) +
+    const w = r.recordings?.work || {}, c = r.code || {}, b = r.branches || {};
+    const of = (n, t) => t != null ? `${num(n ?? 0)} / ${num(t)} <span class="quiet">${Math.round(pct(n ?? 0, t))}%</span>` : "–";
+    return stats([stat(`${w.pass ?? "–"} of ${num(w.total || 0)}`, "work recordings passing"), stat((r.problems || []).length, "problems"), stat(r.review?.state || "–", r.review?.lines != null ? `review · ${num(r.review.lines)} of ${num(r.review.review_lines)} lines` : "review")]) +
+      tbl(["", ""], [["code cited or not ported", of(c.ran - c.uncited, c.ran)], ["branches run both ways", of(b.all_ways ?? b.resolved, b.total)]]) +
+      (r.review_due ? note(`review due: ${r.review_due.why}`) : "") +
       warnings([...(w.failing || []), ...(r.problems || []).map(p => typeof p === "string" ? p : p.text || p.message || JSON.stringify(p))]);
   },
-  port_next(r) { return nextBlock(r); },
   port_check(r) {
     const v = r.verdict || {}, w = v.work || {};
     return lead(`at ${mono(String(r.commit || "").slice(0, 10))} ${pill(v.passed ? "passes" : "fails", v.passed ? "ok" : "bad")} <span class="quiet">${w.pass ?? "–"} of ${num(w.total || 0)} work recordings${v.held_out ? `, ${v.held_out} held out` : ""}</span>`) +
@@ -1037,13 +1024,6 @@ const CARDS = {
 };
 // A template version ("src-d3d81c3e9c70116-release"): its commit, short.
 const ver = v => { const m = String(v || "").match(/[0-9a-f]{12,}/); return m ? m[0].slice(0, 9) : String(v || "?"); };
-function nextBlock(n) {
-  if (!n || !n.item) return "";
-  return lead(`<b style="font-size:15px">${esc(n.item)}${n.recording ? " " + esc(n.recording) : ""}</b> <span class="who ${n.who === "person" ? "person" : ""}">${esc(n.who || "")}</span>`) +
-    `<div class="text">${esc(unroot(n.why || ""))}</div>` +
-    (n.how ? `<details><summary>how</summary><div class="text">${esc(unroot(n.how))}</div></details>` : "") +
-    (n.done_when ? `<details><summary>done when</summary><div class="text">${esc(unroot(n.done_when))}</div></details>` : "");
-}
 function runCard(r, x) {
   const f = r.frames || {}, id = r.identity || {};
   // The files a run wrote: by name (a brief result lists names only).
@@ -1981,7 +1961,7 @@ function reviewState(st) {
   const why = {
     missing: "No review yet.",
     invalid: "review.md cannot be read: " + (st.why || ""),
-    stale: `The code changed since the review of ${(st.commit || "").slice(0, 7)}: ${num(st.changed)} files, ${num(st.lines)} lines in commits since. A follow-up is due once port next asks.`,
+    stale: `The code changed since the review of ${(st.commit || "").slice(0, 7)}: ${num(st.changed)} files, ${num(st.lines)} lines changed since. port check and port status say when that's enough for a follow-up (goal.toml's review_lines).`,
     open: `${(st.unanswered || []).length} findings wait for the writer's answer.`,
     holds: `It holds: ${num(st.findings)} findings, each answered, and the code unchanged since ${(st.commit || "").slice(0, 7)}.`,
   }[st.state] || st.state;
@@ -2017,7 +1997,7 @@ function drawReviews() {
     const fs = r.findings.filter(f => !only || f.new);
     const vs = r.versions.map(v => v.commit ? `<span title="${esc(v.subject)}">${esc(v.commit.slice(0, 7))} ${esc(v.subject.length > 70 ? v.subject.slice(0, 70) + "…" : v.subject)}</span>` : "uncommitted").join("<br>");
     body = `<div class="card"><h2>${pick.k ? "Follow-up" : "Review"} ${pick.k + 1} · of ${esc(r.reviewed.slice(0, 7))}</h2>
-      ${kv([["goal", r.finished ? "finished" : r.matching ? "matching" : "working"], ["review.md in", vs],
+      ${kv([["review.md in", vs],
         ["reads", prev ? `the changes since ${esc(prev.reviewed.slice(0, 7))} <button class="b" data-act="rev-diff">${S.revs.diff ? "hide" : "show"} the diff</button>` : "the code as a whole"]])}
       ${S.revs.diff ? `<div class="code diff" style="max-height:520px;margin-top:8px">${S.revs.diff}</div>` : ""}
       ${pick.k ? `<label class="quiet" style="display:block;margin-top:8px"><input type="checkbox" id="rev-new" ${only ? "checked" : ""}> only the findings this round added</label>` : ""}
@@ -2043,7 +2023,6 @@ function drawReviews() {
 // How the port came along: its standing over time (progress.jsonl), the
 // agents' calls by hour, the commits by day, and where the time went
 // (tools, sessions).
-const STATES = [["working", "--st1"], ["matching", "--st3"], ["finished", "--st2"], ["reviewed", "--st4"], ["complete", "--st5"]];
 const DAY = 86400000, HOUR = 3600000;
 async function statsView(refresh) {
   const i = S.cur;
@@ -2074,20 +2053,18 @@ function drawStats() {
     [num(calls), "psx calls", `${num(failed)} failed`],
     [num(c.hours.length), "hours with calls"],
     [dur(sum(c.tools, "ms")), "in psx calls"],
-    ...(st?.shares ? [["recordings_passing", "goal recordings passing", "the work recordings passing, and the held-out ones once the goal is reviewed"],
-      ["code_accounted", "code cited or not ported", "functions the work recordings run that game/ or tools/ cite or not_ported.toml lists"],
-      ["branches_resolved", "branches resolved", "branches of the code to port run both ways or in wont_reach.toml"]]
-      .map(([k, l, t]) => [`${num(st.shares[k].n)} of ${num(st.shares[k].of)}`, l, t]) : []),
+    ...(st?.recordings ? [[`${num(st.recordings.work?.pass ?? 0)} of ${num(st.recordings.work?.total ?? 0)}`, "work recordings passing", "at this commit"],
+      [`${num((st.code?.ran ?? 0) - (st.code?.uncited ?? 0))} of ${num(st.code?.ran ?? 0)}`, "code cited or not ported", "functions the work recordings run that game/ or tools/ cite or not_ported.toml lists"],
+      [`${num(st.branches?.all_ways ?? 0)} of ${num(st.branches?.total ?? 0)}`, "branches run both ways", "conditional branches of the code to port the recordings ran both ways"]] : []),
     ...(d.decomp ? [[num(d.decomp.named), "functions named", "in names/ and .psx/names/"],
       [`${num(d.decomp.passing)} of ${num(d.decomp.in_c)}`, "functions in C pass", "their last code check, on the current C and names"]] : []),
   ];
   let h = `<div class="card"><h2>Stats</h2><div class="tiles">${tiles.map(([n, l, t]) => `<div class="tile" title="${esc(t || "")}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join("")}</div></div>`;
   // The standing over time.
-  h += `<div class="card"><h2>The goal over time</h2>${prog.length > 1
-    ? `<div class="legend">${STATES.map(([k, v]) => `<span style="--c:var(${v})">${k}</span>`).join("")}</div><canvas class="chart" id="st-state"></canvas>
-       <div class="grid2" style="margin-top:8px"><div><div class="quiet">recordings passing, of all</div><canvas class="chart" id="st-rec"></canvas></div><div><div class="quiet">branches resolved, of all</div><canvas class="chart" id="st-br"></canvas></div><div><div class="quiet">code cited or not ported, of all the work recordings run</div><canvas class="chart" id="st-code-acc"></canvas></div></div>
-       <div class="quiet" style="margin-top:4px">${prog.length} changes since ${fmtDate(prog[0].t)}, as port status and port next saw them</div>`
-    : `<div class="quiet">This builds up as port status and port next see the standing change (from this version of psx on). The commits below go back to the start.</div>`}</div>`;
+  h += `<div class="card"><h2>The port over time</h2>${prog.length > 1
+    ? `<div class="grid2"><div><div class="quiet">work recordings passing, of all</div><canvas class="chart" id="st-rec"></canvas></div><div><div class="quiet">branches run both ways, of all</div><canvas class="chart" id="st-br"></canvas></div><div><div class="quiet">code cited or not ported, of all the work recordings run</div><canvas class="chart" id="st-code-acc"></canvas></div></div>
+       <div class="quiet" style="margin-top:4px">${prog.length} changes since ${fmtDate(prog[0].t)}, as port status saw them</div>`
+    : `<div class="quiet">This builds up as port status sees the standing change. The commits below go back to the start.</div>`}</div>`;
   // Activity.
   h += `<div class="card"><h2>Activity</h2><div class="grid2"><div><div class="legend"><span style="--c:var(--dim)">psx calls</span><span style="--c:var(--act)">failed</span></div><canvas class="chart" id="st-calls"></canvas></div>
     <div><div class="legend"><span style="--c:var(--ok)">code lines added</span><span style="--c:var(--act)">removed</span><span>commits over each day</span></div><canvas class="chart" id="st-code"></canvas></div></div></div>`;
@@ -2105,14 +2082,11 @@ function drawStats() {
 
   if (prog.length > 1) {
     const ts = prog.map(x => x.t);
-    // The goal's state, one band of the chart's height at a time.
-    statStacked($("#st-state"), ts, d.now, STATES.map(([k, v]) => [x => x.state === k ? 1 : 0, css(v)]), prog);
-    // The goal's shares where the line has them, the recordings' and
-    // branches' sums before.
+    // Lines written while psx kept the goal's shares read from those.
     const sh = (x, k, i) => x.shares?.[k]?.[i];
-    statLines($("#st-rec"), ts, d.now, prog, [[x => sh(x, "recordings_passing", "n") ?? x.recordings?.pass, css("--st5")], [x => sh(x, "recordings_passing", "of") ?? x.recordings?.total, css("--st0")]]);
-    statLines($("#st-br"), ts, d.now, prog, [[x => sh(x, "branches_resolved", "n") ?? x.branches?.resolved, css("--st1")], [x => sh(x, "branches_resolved", "of") ?? x.branches?.total, css("--st0")]]);
-    statLines($("#st-code-acc"), ts, d.now, prog, [[x => sh(x, "code_accounted", "n"), css("--st2")], [x => sh(x, "code_accounted", "of"), css("--st0")]]);
+    statLines($("#st-rec"), ts, d.now, prog, [[x => x.recordings?.pass, css("--st5")], [x => x.recordings?.total, css("--st0")]]);
+    statLines($("#st-br"), ts, d.now, prog, [[x => x.branches?.all_ways ?? x.branches?.resolved, css("--st1")], [x => x.branches?.total, css("--st0")]]);
+    statLines($("#st-code-acc"), ts, d.now, prog, [[x => x.code?.accounted ?? sh(x, "code_accounted", "n"), css("--st2")], [x => x.code?.ran ?? sh(x, "code_accounted", "of"), css("--st0")]]);
   }
   // Hours while the log is short, days once it spans more than three.
   const span = c.hours.length ? c.hours.at(-1).t - c.hours[0].t : 0, step = span > 3 * DAY ? DAY : HOUR;
@@ -2137,17 +2111,6 @@ function statFrame(canvas, t0, t1, max) {
   ctx.fillText(num(Math.round(max)), 2, 12); ctx.fillText("0", 2, H - 16);
   ctx.fillText(fmtDate(t0), 34, H - 2); const e = fmtDate(t1); ctx.fillText(e, W - ctx.measureText(e).width - 4, H - 2);
   return {ctx, W, H, X, Y};
-}
-function statStacked(canvas, ts, now, layers, rows) {
-  if (!canvas) return;
-  const tot = r => layers.reduce((s, [g]) => s + g(r), 0);
-  const t1 = Math.max(now, ts.at(-1)), {ctx, X, Y} = statFrame(canvas, ts[0], t1, Math.max(...rows.map(tot)));
-  const ends = rows.map((r, i) => [X(ts[i]), X(i + 1 < ts.length ? ts[i + 1] : t1)]);
-  const base = rows.map(() => 0);
-  for (const [get, color] of layers) {
-    ctx.fillStyle = color;
-    rows.forEach((r, i) => { const v = get(r); if (v) { seg(ctx, ends[i][0], Y(base[i] + v), ends[i][1] - ends[i][0] + .5, Y(base[i]) - Y(base[i] + v), base[i] > 0); base[i] += v; } });
-  }
 }
 function statLines(canvas, ts, now, rows, ls) {
   if (!canvas) return;

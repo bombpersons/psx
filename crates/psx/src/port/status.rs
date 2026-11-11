@@ -754,8 +754,9 @@ fn progress(root: &Path, status: &Value) {
     }
 }
 
-/// The counts the progress line keeps: the verdict, the work recordings
-/// and branches, problems, the review and the decomp.
+/// The counts the progress line keeps: the verdict, the work recordings,
+/// the code accounted for and the branches, problems, the review and the
+/// decomp.
 fn standing(status: &Value) -> Value {
     let work = &status["recordings"]["work"];
     json!({
@@ -763,6 +764,8 @@ fn standing(status: &Value) -> Value {
         "verdict": status["verdict"],
         "branches": {"all_ways": status["branches"]["all_ways"], "total": status["branches"]["total"]},
         "recordings": {"pass": work["pass"], "total": work["total"]},
+        "code": {"accounted": status["code"]["ran"].as_u64().unwrap_or(0) - status["code"]["uncited"].as_u64().unwrap_or(0),
+                 "ran": status["code"]["ran"]},
         "problems": status["problems"].as_array().map_or(0, Vec::len),
         "review": status["review"]["state"],
         "decomp": status["decomp"],
