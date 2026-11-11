@@ -149,7 +149,8 @@ checked C (the rule is not understood yet), or checked C that
 replays it (the rule is known there: the port does not follow it, or
 what is around it differs). port_check's result carries it. It is a place
 to look, not the moment: debug_start on the recording finds that (a pc
-stop at a writer, a watch on reads).
+stop at a writer, a watch on reads), and the pointer's next_calls start
+one there, just before the tick that differs.
 
 fixes/ holds C that changes what the game does on purpose, most often so
 the game takes its input every tick where its driver delays it
@@ -232,7 +233,9 @@ map are psx's only knowledge of the script: reading it is yours. A
 recording made before the map changed is made again.
 
 The port's code cites stretches of a program beside functions,
-name+0xSTART..0xEND (end excluded). code_coverage and code_coverage_diff
+name+0xSTART..0xEND (end excluded); one position, name+0xAT, counts
+only for a program the recordings have, so a global's field cited the
+same way (croc+0x370) is not taken for one. code_coverage and code_coverage_diff
 on recordings report programs: stretches read, sites and ways (with a
 map, statements run and routines entered), and in a diff the ones only the
 first set ran, which locate a behaviour's part of the script.

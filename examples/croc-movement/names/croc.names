@@ -1,0 +1,60 @@
+// Croc (PAL) CROC.EXE, gp = 0x80074B38. Evidence: notes/player-controller.md
+// and the glossary's binding.
+
+// A script-run object (Croc, enemies, pickups); the object loop runs each.
+struct Object {
+  0x000 u8 *pc              // the script's PC: dispatch reads *pc (0x8002CFF8)
+  0x004 u8 *base            // jump targets are base-relative u16
+  0x008 int *locals         // L<n>, 4 bytes each (Croc's at 0x8007C300)
+  0x010 Object *parent
+  0x038 int floor_height    // collision 0x800361A4
+  0x03C int surface         // collision 0x80036198
+  0x144 u16 anim_time       // += the animation's rate and +0x146, a frame per 0x100
+  0x146 s16 anim_speed      // opcode 65 (0x8002B0FC)
+  0x14C int jump_height_left  // JUMP sets it, rise 0x8002D8D4 subtracts the speed
+  0x150 int vertical_speed  // JUMP sets 261; rise and fall change it
+  0x174 u32 flags           // bit 1 yield, 0x200 rising, 0x400 falling, 0x1000 landed, 0x2000 apex
+  0x178 u32 contact         // bit 1 set while standing (MOVE tests it)
+  0x36A u16 facing          // 12 bits; MOVE masks it with 0xFFF
+  0x370 int x
+  0x374 int y               // written at 0x8002AC7C
+  0x378 int z
+}
+
+global 0x8007528C Object *croc          // 0x800D8A1C in 1-1
+global 0x80075240 int logic_accumulator // += 128 a field (0x80014618), -= 256 a step (0x80013CA8)
+global 0x80074D08 int speed_x           // world units << 12, added >> 12 to x (MOVE's end)
+global 0x80074D0C int speed_z
+global 0x80074D10 int speed             // the smoothed speed's size; anim rate reads it
+global 0x800751CC int move_state        // the gait MOVE sets: 0 standing .. 5 sliding steep
+global 0x800751D0 int turn_rate         // 16.16, added >> 16 to the facing by TURN
+global 0x800752A0 int walk_counter      // counted up to 5 in MOVE
+global 0x8007529C int control_mode      // 0 none, 1 digital (tank), 2 analog
+global 0x800752C8 int input_lock        // non-zero: MOVE and TURN ignore the pad
+global 0x80075424 u32 pad               // built by read_pad_word from 0x8007C19A
+global 0x8007536C u32 pad_pressed
+global 0x80075368 u32 pad_released
+global 0x80074B54 u32 pad_previous
+global 0x80086498 int script_globals[64]  // G<n>, 16.16; G0 the player's state? (1 normal, 4 stomp)
+
+function 0x80012C6C void main_loop()
+function 0x80015EA0 void read_pad()               // pressed and released from pad_previous
+function 0x800393A8 u32 read_pad_word()
+function 0x8002C790 void update_objects()        // once per logic step (0x80013C08)
+function 0x8002F168 int eval_expression?(Object *obj)  // a 16.16 stack machine
+function 0x8002D410 void collide(Object *obj)
+function 0x80031F64 void world_collide(Object *obj)
+function 0x8002D810 void fall(Object *obj)
+function 0x8002D8D4 void rise(Object *obj)
+function 0x8004162C void update_camera()
+// Opcodes: each takes the object and moves its pc past what it read.
+function 0x80027CB0 void op_set_animation(Object *obj)
+function 0x80028688 void op_jump(Object *obj)
+function 0x800286F4 void op_stomp_fall(Object *obj)
+function 0x80028734 void op_clear_jump(Object *obj)
+function 0x8002879C void op_start_fall(Object *obj)
+function 0x8004317C void op_stop_moving(Object *obj)
+function 0x80043234 void op_move(Object *obj)
+function 0x8004425C void op_turn(Object *obj)
+function 0x800544FC int sin(int angle)            // 4096 = 1.0, quarter-wave table 0x8006D5D4
+function 0x800545C8 int cos(int angle)

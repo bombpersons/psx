@@ -6,9 +6,9 @@
 //! modules, each with its own state and steps, which [`crate::Game::tick`]
 //! runs in the tick's order:
 //!
-//! - [`running`]: ground movement and turning (F-0001)
-//! - [`jump`]: the jump and its landing (F-0002)
-//! - [`stomp`]: the stomp (F-0003)
+//! - [`running`]: ground movement and turning
+//! - [`jump`]: the jump and its landing
+//! - [`stomp`]: the stomp
 //!
 //! The rise and fall they start are the body's ([`crate::character`]).
 pub mod jump;

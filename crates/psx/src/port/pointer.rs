@@ -271,12 +271,13 @@ fn ranked(code: &Code, counts: BTreeMap<u32, u64>, what: &str) -> Vec<Value> {
 }
 
 /// The pointer for `recording`, from what its replay saw for the
-/// `quantities` that differ; `with_c` is the recording's replay with the
-/// checked C, when there was one.
+/// `quantities` that differ at tick `at`; `with_c` is the recording's
+/// replay with the checked C, when there was one.
 pub(crate) fn pointer(
     code: &Code,
     recording: &str,
     quantities: &[String],
+    at: u64,
     seen: &Seen,
     with_c: Option<&Value>,
 ) -> Value {
@@ -384,12 +385,15 @@ pub(crate) fn pointer(
     }
     if !unchecked.is_empty() {
         evidence.push(format!(
-            "{}: the port's code cites it, with no checked C: the original's rule there is not understood yet",
+            "{}: the port's code cites it, with no checked C: the original's rule there is not understood yet (its C in decomp/, then code_check)",
             unchecked.join(", ")
         ));
     }
     if !nowhere.is_empty() {
-        evidence.push(format!("{}: cited nowhere in the port: its rule may be missing", nowhere.join(", ")));
+        evidence.push(format!(
+            "{}: cited nowhere in the port: its rule may be missing (code_decompile it)",
+            nowhere.join(", ")
+        ));
     }
     if !set_aside.is_empty() {
         evidence.push(format!(
@@ -415,6 +419,17 @@ pub(crate) fn pointer(
         }
     }
     out["evidence"] = json!(evidence);
+    // The moment in the original: just before tick `at`'s work, then the
+    // first writer (or the code first run there).
+    let writer = qs.iter().find_map(|q| q["writers"].get(0)).or_else(|| out["first_run"].get(0));
+    let mut calls = vec![json!({"tool": "debug_start", "arguments": {"recording": recording}})];
+    if at > 1 {
+        calls.push(json!({"tool": "debug_go", "arguments": {"ticks": at - 1}}));
+    }
+    if let Some(w) = writer {
+        calls.push(json!({"tool": "debug_go", "arguments": {"pc": w["entry"]}}));
+    }
+    out["next_calls"] = json!(calls);
     out
 }
 
@@ -449,7 +464,7 @@ pub(crate) fn pointers(
             Ok((s, c))
         })();
         let v = match s {
-            Ok((s, c)) => pointer(&code, recording, quantities, &s, c.as_ref()),
+            Ok((s, c)) => pointer(&code, recording, quantities, *at, &s, c.as_ref()),
             Err(why) => json!({"recording": recording, "evidence": [format!("no pointer: {why}")]}),
         };
         out.insert(recording.clone(), v);
@@ -481,7 +496,7 @@ mod tests {
         seen.reads.insert("speed".into(), vec![0x5000, 0x5001]);
         seen.stores.insert((0x1010, 0x5000), 3);
         seen.first_words = vec![0x2000, 0x2004];
-        let p = pointer(&code, "b1/offroad", &["speed".into()], &seen, None);
+        let p = pointer(&code, "b1/offroad", &["speed".into()], 12, &seen, None);
         assert_eq!(p["quantities"][0]["reads"], json!(["0x80005000..0x80005002"]));
         assert_eq!(p["quantities"][0]["writers"][0]["function"], "grip");
         assert_eq!(p["first_run"][0]["function"], "collide");
@@ -489,16 +504,20 @@ mod tests {
         let ev = p["evidence"].to_string();
         assert!(ev.contains("collide: cited nowhere in the port"), "{ev}");
         assert!(ev.contains("grip: the port's code cites it, with no checked C"), "{ev}");
+        // The moment: just before tick 12's work, at the first writer.
+        assert_eq!(p["next_calls"][0], json!({"tool": "debug_start", "arguments": {"recording": "b1/offroad"}}));
+        assert_eq!(p["next_calls"][1]["arguments"], json!({"ticks": 11}));
+        assert_eq!(p["next_calls"][2]["arguments"]["pc"], p["quantities"][0]["writers"][0]["entry"]);
         // Checked C that replays the recording: the rule is known there.
         code.checked.insert("grip".into(), true);
         let c = json!({"status": "same", "share_in_c": 0.2});
-        let p = pointer(&code, "b1/offroad", &["speed".into()], &seen, Some(&c));
+        let p = pointer(&code, "b1/offroad", &["speed".into()], 12, &seen, Some(&c));
         assert!(p["evidence"].to_string().contains("checked C covers grip and the recording replays with it"));
         assert!(!p.to_string().contains("\"at\""), "{p}");
         // Code set aside as not ported that writes a differing quantity.
         code.cited.clear();
         code.not_ported.insert("0x00000F00..0x00001100".into(), "libgte helpers".into());
-        let p = pointer(&code, "b1/offroad", &["speed".into()], &seen, None);
+        let p = pointer(&code, "b1/offroad", &["speed".into()], 12, &seen, None);
         assert!(
             p["evidence"].to_string().contains("grip (libgte helpers): listed in catalogue/not_ported.toml"),
             "{}",

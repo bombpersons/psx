@@ -79,6 +79,52 @@ from the original's and names the worst moment, for `scenario_show` with
 `screens` to show you. Things not drawn yet always count, so watch the
 trend.
 
+## Moments and the tools for them
+
+psx does far more than the loop above uses every day. Read the guide's
+overview once in a session that hasn't; when one of these comes up, its
+tool is there (the guide's topic in brackets has the details):
+
+- **A new workspace**: the glossary's binding, the tick (`run` with
+  `find_tick`), the first start state (`run` with `save_as`) and scenario
+  (the guide's Recordings; topic setup).
+- **A recording fails**: `port_check` names the code that wrote the value
+  and the code first run there. `debug_start` on the recording, stopped at
+  a writer (`pc`), at the value (`write`) or at the `tick`, shows that
+  moment in the original; `debug_back` steps back (topic debug).
+- **The code behind a behaviour**: `code_coverage_diff` of recordings doing
+  it against ones that don't; `code_xrefs` on a value for its readers and
+  writers (topic code).
+- **A rule you aren't sure of**: write the function as C in `decomp/` and
+  `code_check` it against the original; `port_check` with `decomp` then
+  says whether the recordings replay with it. The C is the rule's
+  specification; the port says it its own way (topic code).
+- **Reading the original's code**: `code_decompile`, `code_disasm`; name
+  what you learn in `names/`, and `code_names` with no query lists what's
+  most worth naming next (topic code).
+- **A value you can't find in RAM**: `ram_search` over snapshots,
+  `ram_view` across them, a `watch` for its writers (topic code).
+- **Rules in a script** (bytecode or tables the game's interpreter runs):
+  the glossary's binding names the programs, so coverage and citations
+  reach the script's own branches (topic code, Scripted rules).
+- **An asset**: `trace_cd` finds the run that loads a file and where it
+  lands, a `watch` there the parser, and `formats/` holds what you learn;
+  `assets_scan` and `assets_extract` read the standard formats; a GPU
+  capture (`debug_go` with `draw`) and `assets_textures` show what the
+  game built, which the importers' tests compare against (topic assets).
+- **Input that lands late** (`late_input` in `port_status`): replace the
+  driver's function in `fixes/` so the game takes input every tick (topic
+  run, Adjustments).
+- **A scenario changed**: `scenario_check`, the determinism check, before
+  its recordings count again.
+- **A place scripted input can't reach**: `scenario_play` without a
+  scenario asks the person to get there (topic run, Asking the person).
+- **The person**: they can write from psx web at any time, and what they
+  wrote comes with any psx result; answer with `message`. `port_status`
+  with `plain=true` is where the port stands, in their words.
+- **The original's exact arithmetic** in a port not in Rust:
+  `port_vectors` (topic arithmetic).
+
 ## Layout
 
 ```
@@ -158,7 +204,9 @@ yours to decide. What the tools rely on besides the above:
   every decompile, disassembly and trace then reads with those names.
 - **Cite** where each constant and non-obvious rule came from: the address,
   the instruction that writes or tests it, or the recording that showed
-  it, and what was not verified, so someone can re-check it with psx.
+  it, and what was not verified, so someone can re-check it with psx. A
+  citation is there to re-check the rule by, not for `port_status`'s
+  count.
 - Where a recording needs the original's exact arithmetic, `psx_fixed`
   computes as its compiled C does and `psx_gte` as its GTE does.
 

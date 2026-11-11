@@ -21,6 +21,8 @@ Nothing known.
   slopes, slippery and moving floors, walls and ledges are not reached.
 - Analog stick mode, room entry sequences and the underwater fall (the
   branches below).
+- Stomping again from the settle (jump held, still high): ported from the
+  script but unchecked, since only a floor that drops away reaches it.
 
 ## Next, and why
 

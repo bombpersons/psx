@@ -2,7 +2,8 @@ psx reads a PlayStation game: it runs the disc on its own emulator core and
 measures what the game does, reads its code and decodes its data. A port is
 the game, or a part of it, rewritten as an ordinary, modern program and checked
 against recordings of the original. This guide is the whole method; the
-topics run, code, assets and setup hold the details of the commands.
+topics run, debug, code, assets, setup and arithmetic hold the details of
+the commands.
 
 Each command is an MCP tool named command_subcommand. Addresses, PCs and registers are hex strings (0x80012345); a
 data address that could be anywhere has its region beside it (main_ram,

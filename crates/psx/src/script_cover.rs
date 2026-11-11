@@ -723,6 +723,11 @@ pub fn items(m: &Merged, code: &[Stretch]) -> (Vec<Item>, Vec<String>) {
     let (mut items, mut problems) = (Vec::new(), Vec::new());
     for s in code {
         let Some(p) = m.programs.get(&s.program) else {
+            // One position of no program the recordings have is a global's
+            // field (`gp+0x1D0`, `croc+0x370`), not a script's.
+            if s.end == s.start + 1 {
+                continue;
+            }
             problems.push(format!(
                 "code {s}: no work recording has the program {}: the glossary binding's programs (or hooks) name it, and recordings made before it did are recorded again",
                 s.program
@@ -885,9 +890,11 @@ mod tests {
         let other = Program { sha256: Some("t".into()), ..a.clone() };
         m.add(&doc(&other), "c");
         assert!(m.problems[0].starts_with("c: its program croc holds other bytes"), "{:?}", m.problems);
-        let (_, problems) = super::items(&m, &[st("gex+0x0..0x4"), st("croc+0x10..0x30")]);
+        // A global's field (gp+0x1D0) is no script position.
+        let (_, problems) = super::items(&m, &[st("gex+0x0..0x4"), st("gp+0x1d0"), st("croc+0x10..0x30")]);
         assert!(problems[0].starts_with("code gex+0x0..0x4: no work recording has the program gex"));
         assert_eq!(problems[1], "code croc+0x10..0x30: past the end of croc (0x20 bytes)");
+        assert!(!problems.iter().any(|p| p.contains("gp+")), "{problems:?}");
     }
 
     #[test]

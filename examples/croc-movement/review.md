@@ -1,5 +1,5 @@
 +++
-commit = "27038d0d11144ac834cb6a1725b353e0bfd229ab"
+commit = "4193a645a4d7d5f1ab01f8167c1fb941bb3249b7"
 +++
 
 ## The character's body is welded to the player: split a generic `character` module from `croc`
@@ -264,3 +264,37 @@ I would let an action's body update its own progress in place, in `current` (`Ac
 I would call `game::config::load_ron::<Level>(Level::START)` in both tests. If a test needs to pin the crate's own folder, set `BEVY_ASSET_ROOT` once in a shared test helper. A small `Level::start()` constructor beside `Level::START` would serve `world::start` and both tests.
 
 **Answer:** Done. `Level::start()` reads the start level through `config::load_ron`, which also honours layered asset folders, and is shared by the game's `start` system, `tests/level.rs` and `tests/dev_mcp.rs`.
+
+## Follow-up at 4193a64: the answers above describe the Bevy port
+
+Since a9f555d the port moved from the Bevy template to plain Rust, and most of the code was rewritten. The substance of the answers above survives: a generic `character` body, `VerticalState` as one enum, the stomp's steps as one `match` inside `ActionKind::Stomp`, the placement kind named once, and `Level::start()` shared with the tests. Their words don't: `TickPhase`, the plugins, required components, observers, `Landed` as a marker, `disc.rs` and `tests/dev_mcp.rs` are all gone. A reader checking an answer against the code can't tell which parts still hold.
+
+I would leave the answers as the record of that review, and say here which no longer describe the code: the tick's order is now one function, `Game::tick`; components are fields of `Croc` and `Character`; the landing is `Character::landed`; and the disc import is the `disc-import` add-on.
+
+**Answer:** Done: this finding is that note. The answers above are kept as written at a9f555d.
+
+## The world and the tick know only Croc
+
+`World` has one slot, `croc: Option<Croc>`. `Level::build` matches `croc::PLACEMENT` itself, so `world.rs` imports Croc again. This undoes the answer to "Two names for the player's placement kind, and the world still spawns the player". `Game::tick` runs the body's work (`clip.advance`, `move_vertically`, `follow_floor`, `collide`) on `croc.body` alone, interleaved with Croc's abilities. A second character, such as an enemy that falls, would get no physics without editing the tick.
+
+I would make the world a list of characters, each a body plus its controller. The tick then runs every body's physics before the controllers and collision after them, as the original's object loop does for every object (0x8002C790). Placement kinds would map to their spawn functions in a table the controllers fill, so `world.rs` names none.
+
+**Answer:** Kept for now. Croc is the only character the goal asks for, and a list or a table with one entry would be indirection with no second user. The split is already drawn: the body's work lives in `character`, and Croc's in `croc`. When a second kind of object is ported, the world becomes a list of characters and the placement table comes with it. STATUS.md's next step, the level's geometry, brings the first of them.
+
+## Module docs name features psx no longer has
+
+`croc/mod.rs`, `running.rs`, `jump.rs` and `stomp.rs` open with `F-0001`..`F-0004`. These were feature IDs from the old catalogue, which `psx port update` removed, so they point at nothing.
+
+**Answer:** Done. The docs say what each module is, and the standing sidestep is named instead of `F-0004`.
+
+## The goal: running as the original does it includes the standing sidestep and the analog stick
+
+The description asks for Croc's running "as the original does" it. Standing still, L1 and R1 sidestep him by his animation's root motion, and with the analog stick (control mode 2) he runs relative to the camera. No work recording shows either, and the port has neither.
+
+**Answer:** Kept, in STATUS.md's Not ported. The standing sidestep needs Croc's animations imported. The analog stick needs a start state with a DualShock in analog mode and recordings of it; it doesn't need the level, so it can come before the geometry.
+
+## The goal: the second stomp from the settle is read, not checked
+
+Holding jump as Croc settles, still more than 0x83 above the floor, stomps again with no hang (`stomp.rs`). The module says no flat-floor recording reaches it, so the rule rests on reading the script alone.
+
+**Answer:** Kept. It needs a floor that drops away under Croc, so it waits for the level's geometry (STATUS.md's next step). A recording of a stomp off a ledge checks it then.

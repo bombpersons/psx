@@ -139,7 +139,7 @@ impl ToolDef {
 /// Every tool. Descriptions are written for an agent doing PS1 reverse engineering.
 pub fn tools() -> Vec<ToolDef> {
     vec![
-        def::<crate::guide::GuideArgs>("guide", "The method: omit topic for the porting guide, read once; topics run, code, assets and setup hold the details. Tool descriptions are brief: argument rules and output details live here.").read_only(),
+        def::<crate::guide::GuideArgs>("guide", "The method: omit topic for the porting guide, read once; topics run, debug, code, assets, setup and arithmetic hold the details. Tool descriptions are brief: argument rules and output details live here.").read_only(),
         def::<crate::messages::MessageArgs>("message", "Talk with the person, who reads psx web: text sends (reply_to: a message's id, to answer in its thread); without text, the latest threads. Their messages arrive in any psx result as messages: reply at once, in a line or two, then go on with the work."),
         def::<crate::reports::ReportArgs>("report", "A reviewer's report for the person alone (Markdown text), shown in psx web: the review brief says when."),
         def::<crate::context::ArgsContext>("context", "Start here: the running build, project root, saved defaults (media, BIOS), local BIOS candidates and the download catalog, whether Ghidra is found, and capabilities. image or from_state explains region or checkpoint identity; save=true stores the resolved defaults. Never downloads."),
@@ -626,7 +626,7 @@ impl ServerHandler for PsxServer {
             .with_instructions(format!(
                 "PlayStation (PS1) reverse-engineering toolkit. Each tool is one `psx` CLI command and returns the JSON the CLI prints. \
                  {default} bios/, media/, external/ and .psx/ outputs live in the project root; relative paths resolve against it. project_root on any call selects another existing project for that call only. \
-                 In a port's workspace port_check is the test and port_status shows where it stands; elsewhere start with context. guide is the method, read once (topics run, code, assets and setup hold the details): tool descriptions are brief and the guide holds argument rules and recipes. \
+                 In a port's workspace port_check is the test and port_status shows where it stands; elsewhere start with context. guide is the method, read once (topics run, debug, code, assets, setup and arithmetic hold the details): tool descriptions are brief and the guide holds argument rules and recipes. \
                  Emulation outputs are files in the returned run_dir; read them with read. run summary=true returns only paths and counts. Results over 32 KiB come back as a result_file path with a summary.",
                 default = self.default_note()
             ))

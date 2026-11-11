@@ -1,4 +1,4 @@
-//! F-0003: Croc's stomp. A second press of jump, high enough in a jump,
+//! Croc's stomp. A second press of jump, high enough in a jump,
 //! stops Croc in the air for the length of his stomp animation, then drops
 //! him; after landing he settles and recovers before he can move again.
 //! The script's action 4 (script 0x2732), with the opcodes 0x76 (hang,
@@ -9,7 +9,7 @@
 //!
 //! Provisional: the hang and the settling last as long as two of Croc's
 //! animations (CROCSMP1, CROCSMP3), whose lengths stand in [`StompTuning`]
-//! until his animations are imported (F-0004 needs them too). Stomping
+//! until his animations are imported (the standing sidestep needs them too). Stomping
 //! again from the settle (jump held, still high above the floor) needs the
 //! floor to drop away under Croc, so no flat-floor recording reaches it: it
 //! is read from the script, not verified. That second stomp has no hang:

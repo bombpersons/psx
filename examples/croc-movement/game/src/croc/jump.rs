@@ -1,4 +1,4 @@
-//! F-0002: Croc's jump. A press of jump starts it (script sub 0x1803 and
+//! Croc's jump. A press of jump starts it (script sub 0x1803 and
 //! the JUMP opcode 0x80028688), a rise that the body's
 //! [`crate::character::vertical`] carries:
 //! it slows near the top, and sooner when jump is let go, then falls and

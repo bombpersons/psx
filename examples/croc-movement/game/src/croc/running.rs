@@ -1,4 +1,4 @@
-//! F-0001: Croc's running. Ground movement (the MOVE opcode, 0x80043234)
+//! Croc's running. Ground movement (the MOVE opcode, 0x80043234)
 //! and turning (the TURN opcode, 0x8004425C), with the digital pad's tank
 //! controls (control mode 0x8007529C = 1): forward and back move, left and
 //! right turn on the ground and strafe in the air, L1 and R1 sidestep while
@@ -7,7 +7,7 @@
 //! Not ported (no recording reaches them on the flat stand-in floor): slippery surfaces,
 //! slides, walls, platforms carrying Croc, the analog stick, and the input
 //! lock of cutscenes. Standing still, L1 and R1 do nothing here: the
-//! original's standing sidestep is the animation's own motion (F-0004).
+//! original's standing sidestep is the animation's own motion, not imported yet.
 use psx_fixed::Fixed;
 use psx_gte::math::{rcos, rsin};
 use psx_scenario::Button;
