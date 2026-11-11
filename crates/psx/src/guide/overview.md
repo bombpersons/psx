@@ -51,8 +51,15 @@ Rules:
   When only a recording shows a rule, the citation says so.
 - Cite the address, the instruction or the recording beside each constant
   and rule, and what was not verified.
-- Hold recordings out. The person's plays (goal.toml's held_out) are
-  judged and counted, not shown; never work on them or tune to them.
+- A long play is the map, not the work. When its first difference shows
+  something not yet ported, record a few short recordings of that thing,
+  starting near it and varying how it happens, and port it until they
+  pass; then see the play get further. A rule built from one moment of a
+  long play rarely holds at the next.
+- Hold recordings out. The person's plays in goal.toml's held_out are
+  judged and counted, not shown; never work on them or tune to them. A
+  play the agent asked for is a work recording unless the person moves it
+  there.
 - A recording that differs is not a distance to close: the rule for
   those quantities is not understood yet, or other code it runs is not
   ported. port_check names them, not where or by how much, and points
