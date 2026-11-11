@@ -891,6 +891,11 @@ fn analysis_symbols(input: &Input, bytes: &[u8], mapping: &Mapping, warnings: &m
     let (base, end) = (mapping.base, mapping.base + mapping.size);
     let mut symbols = Vec::new();
     for path in &input.symbols {
+        if path.extension().is_some_and(|e| e == "names") {
+            warnings
+                .push(format!("{}: names files apply to every decompile already; left out of symbols", path.display()));
+            continue;
+        }
         let text = fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
         if path.to_string_lossy().ends_with(".symbols.json") {
             let value: Value =
@@ -926,13 +931,15 @@ fn analysis_symbols(input: &Input, bytes: &[u8], mapping: &Mapping, warnings: &m
             }
         } else {
             warnings.push(format!("{}: plain .sym names are unverified", path.display()));
-            for line in text.lines() {
+            for (n, line) in text.lines().enumerate() {
                 if line.trim_start().starts_with(['#', ';']) {
                     continue;
                 }
                 let mut words = line.split_whitespace();
                 if let (Some(a), Some(name)) = (words.next(), words.next()) {
-                    symbols.push(json!({"address":ram_address(hex(a)?)?,"name":name,"kind":"function"}));
+                    let a =
+                        hex(a).map_err(|e| Error::invalid(format!("{}:{}: {}", path.display(), n + 1, e.message)))?;
+                    symbols.push(json!({"address":ram_address(a)?,"name":name,"kind":"function"}));
                 }
             }
         }

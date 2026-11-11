@@ -433,6 +433,11 @@ pub(crate) fn address(spec: &str) -> Result<u32, String> {
         None => (spec, 0),
     };
     let found = find(&names, base);
+    if let Some(h) = psx_media::memmap::parse_hex(base) {
+        if base.starts_with("0x") || base.starts_with("0X") || found.is_empty() {
+            return Ok(h.wrapping_add(off));
+        }
+    }
     match found.as_slice() {
         [a] => Ok(a.wrapping_add(off)),
         [] => Err(format!("{base:?} is neither a hex address nor a name in names/")),

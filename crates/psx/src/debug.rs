@@ -551,6 +551,11 @@ fn start(ctx: &Ctx, a: DebugStartArgs) -> crate::Result<Value> {
     let run: crate::run::RunCmdArgs =
         serde_json::from_value(given.clone()).map_err(|e| Error::invalid(format!("debug_start: {e}")))?;
     let mut r = run.start_args(ctx)?;
+    // Nothing named a state: say so, since a mistyped argument lands here.
+    let power_on = r.from_state.is_none().then(|| match &r.media {
+        Some(m) => format!("power-on with {}: no recording or from_state given", m.display()),
+        None => "power-on with no disc: no recording or from_state given".to_string(),
+    });
     let events = crate::replay::resolve(r.replay.as_deref(), r.input.as_ref(), u64::MAX).map_err(Error::invalid)?;
     let b = crate::run_native::begin(&ctx.root, &mut r, &events)?;
     let unavailable = b.unavailable().cloned();
@@ -590,6 +595,9 @@ fn start(ctx: &Ctx, a: DebugStartArgs) -> crate::Result<Value> {
     }
     if let Some(r) = &o.book.recording {
         v["recording"] = json!(r);
+    }
+    if let Some(p) = power_on {
+        v["started"] = json!(p);
     }
     Ok(o.result(v))
 }

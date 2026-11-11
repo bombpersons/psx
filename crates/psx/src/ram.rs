@@ -1467,6 +1467,9 @@ mod tests {
         // A name that is also a hex address is the address.
         assert!(matches!(col("a0010000"), Column::Memory(c) if c.addr == 0xA001_0000));
         assert!(matches!(col("8015e8a8:i16"), Column::Memory(_)));
+        // So is hex with an offset.
+        assert!(matches!(col("0x800B19E8+16:i32"), Column::Memory(c) if c.addr == 0x800B_19F8));
+        assert!(matches!(col("800D2ED4+0x40"), Column::Memory(c) if c.addr == 0x800D_2F14));
         assert!(SampleSpec::Text("Croc_x".into()).parse().unwrap_err().contains("neither a hex address nor a name"));
     }
 
