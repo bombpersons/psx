@@ -211,12 +211,24 @@ struct Pending {
     slot_ran: bool,
 }
 
+/// Main RAM's words among `pcs`, folded, by bit.
+fn hooked<'a>(pcs: impl Iterator<Item = &'a u32>) -> Vec<u64> {
+    let mut bits = vec![0u64; 0x20_0000 / 4 / 64];
+    for p in pcs.map(|&p| crate::run::fold(p)).filter(|&p| p < 0x20_0000) {
+        bits[(p / 4 / 64) as usize] |= 1 << (p / 4 % 64);
+    }
+    bits
+}
+
 /// What a recording collects of the scripts the original ran.
 pub struct Scripts {
     /// The hooks' pcs, folded, to the pc as the binding gave it (which its
     /// hook is told).
     at: BTreeMap<u32, u32>,
     branch: BTreeMap<u32, u32>,
+    /// Main RAM's words that are a hook's pc, by bit: most steps are not
+    /// one, which this tells without a map lookup.
+    hooked: Vec<u64>,
     /// The programs declared at the last tick: name, folded start, length.
     regions: Vec<(String, u32, u32)>,
     pub programs: BTreeMap<String, Program>,
@@ -234,6 +246,7 @@ impl Scripts {
         Scripts {
             at: hooks.at.iter().map(|&p| (crate::run::fold(p), p)).collect(),
             branch: hooks.branch.iter().map(|&p| (crate::run::fold(p), p)).collect(),
+            hooked: hooked(hooks.at.iter().chain(&hooks.branch)),
             regions: Vec::new(),
             programs: BTreeMap::new(),
             pending: None,
@@ -342,7 +355,7 @@ impl Scripts {
                 }
             }
         }
-        if info.exception.is_some() {
+        if info.exception.is_some() || !self.may_hook(pc) {
             return;
         }
         if self.branch.contains_key(&pc) {
@@ -351,6 +364,14 @@ impl Scripts {
         }
         if let Some(&given) = self.at.get(&pc) {
             self.hook(b, m, [given, 0, 0, 0]);
+        }
+    }
+
+    /// Whether folded `pc` may be a hook's: outside main RAM, the maps say.
+    fn may_hook(&self, pc: u32) -> bool {
+        match pc {
+            0..0x20_0000 => self.hooked[(pc / 4 / 64) as usize] & 1 << (pc / 4 % 64) != 0,
+            _ => true,
         }
     }
 

@@ -188,7 +188,8 @@ mod tests {
     fn a_play_others_start_inside_is_not_held_out() {
         let d = workspace();
         let root = d.0.as_path();
-        let header = |from: &str| format!("{{\"producer\": {{\"name\": \"psx\", \"details\": {{\"from\": \"{from}\"}}}}}}\n");
+        let header =
+            |from: &str| format!("{{\"producer\": {{\"name\": \"psx\", \"details\": {{\"from\": \"{from}\"}}}}}}\n");
         std::fs::write(root.join("scenarios/walk/near.jsonl"), header("play@24")).unwrap();
         std::fs::write(root.join("scenarios/walk/after.jsonl"), header("short")).unwrap();
         std::fs::write(root.join("scenarios/walk/later.jsonl"), header("near")).unwrap();

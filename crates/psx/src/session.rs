@@ -422,6 +422,8 @@ impl<'a> Session<'a> {
         let per_step = self.tick.is_some()
             || self.adjust.as_ref().is_some_and(Running::per_step)
             || self.observers.iter().any(|o| o.per_step());
+        // Only these see each step: the others look at fields and ticks.
+        let stepping: Vec<usize> = (0..self.observers.len()).filter(|&k| self.observers[k].per_step()).collect();
         while self.m.bus.frames < target {
             let frame = self.m.bus.frames;
             if frame != self.last_field && frame >= self.start {
@@ -457,8 +459,8 @@ impl<'a> Session<'a> {
                     a.step(&info, &mut self.m);
                 }
                 let mut stop = None;
-                for o in &mut self.observers {
-                    if let Flow::Stop(why) = o.step(&info, &mut self.m) {
+                for &k in &stepping {
+                    if let Flow::Stop(why) = self.observers[k].step(&info, &mut self.m) {
                         stop = stop.or(Some(why));
                     }
                 }

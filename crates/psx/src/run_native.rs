@@ -556,7 +556,8 @@ pub(crate) fn watch(m: &mut Machine, specs: &[String], max: usize) -> crate::Res
         let mut v = json!({"watch": w, "address": hex(addr), "width": width});
         let (spec, _) = crate::commands::split_width(w);
         if matches!(crate::names_bind::NamePath::parse(spec), Some(Ok(p)) if p.derefs) || spec.contains("->") {
-            v["note"] = json!("through a pointer: where it led when the go started (the pointer is not followed later)");
+            v["note"] =
+                json!("through a pointer: where it led when the go started (the pointer is not followed later)");
         }
         landed.push(v);
     }
@@ -628,6 +629,7 @@ pub(crate) fn tracer(
         frames: t.trace_frames,
         ranges,
         max_lines: max_events as u64,
+        words_only: false,
     };
     let path = dir.join("trace.txt");
     let mut file = std::fs::File::create(&path).map_err(|e| Error::io(&path, e))?;

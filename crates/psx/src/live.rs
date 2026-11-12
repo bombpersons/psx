@@ -68,7 +68,17 @@ pub fn field(m: &Machine) {
 /// Written beside and renamed, so a reader never sees half a file.
 fn write(path: &Path, w: u32, h: u32, rgba: &[u8]) {
     let tmp = path.with_extension("tmp.png");
-    if crate::run::write_png(&tmp, w, h, rgba, png::ColorType::Rgba).is_ok() {
+    // Fast compression: a screen is replaced eight times a second.
+    if write_fast_png(&tmp, w, h, rgba).is_ok() {
         let _ = std::fs::rename(&tmp, path);
     }
+}
+
+fn write_fast_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()> {
+    let file = std::fs::File::create(path)?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.set_compression(png::Compression::Fastest);
+    enc.write_header()?.write_image_data(rgba).map_err(std::io::Error::other)
 }

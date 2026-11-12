@@ -552,7 +552,15 @@ pub(crate) const UNPACK_HINT: &str = "the inventory does not hold all the code t
 fn tracer(m: &mut Machine) -> Tracer {
     // The tracer copies a code page again when a store changed it.
     m.bus.page_writes = vec![0; psx_core::bus::RAM_SIZE / psx_core::trace::CODE_PAGE];
-    let cfg = TraceConfig { from_frame: m.bus.frames, start_pc: None, frames: None, ranges: Vec::new(), max_lines: 0 };
+    // A recording keeps the words run and the branches' ways alone.
+    let cfg = TraceConfig {
+        from_frame: m.bus.frames,
+        start_pc: None,
+        frames: None,
+        ranges: Vec::new(),
+        max_lines: 0,
+        words_only: true,
+    };
     Tracer::new(cfg, Box::new(std::io::sink()), None)
 }
 

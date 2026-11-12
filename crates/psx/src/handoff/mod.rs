@@ -851,7 +851,8 @@ fn alive<T>(dir: &Path, state: &str, fields: u64, shown: Shown, f: impl FnOnce(&
     std::thread::scope(|sc| {
         sc.spawn(|| {
             while !stop.load(Ordering::Relaxed) {
-                let mut v = json!({"status": state, "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
+                let mut v =
+                    json!({"status": state, "pid": std::process::id(), "updated_unix_ms": crate::now_ms() as u64});
                 if fields > 0 {
                     let n = done.load(Ordering::Relaxed).min(fields);
                     v["field"] = json!(n);
@@ -921,7 +922,9 @@ fn run(
 ) -> (bool, Value) {
     let result = (|| -> crate::Result<Value> {
         let (mut s, scenario) = match a.id {
-            Some(_) => alive(dir, "starting", 0, &|_| {}, |_| scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?,
+            Some(_) => {
+                alive(dir, "starting", 0, &|_| {}, |_| scenario_start(ctx, &mut a)).map(|(s, p)| (s, Some(p)))?
+            }
             None => {
                 let mut s = start(&a)?;
                 if let Some((set, tick)) = power_on_adjust(ctx, &a)? {

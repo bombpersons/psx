@@ -517,9 +517,7 @@ impl Reg {
             "hi" => Some(Reg::Hi),
             "lo" => Some(Reg::Lo),
             "s8" => Some(Reg::Gpr(30)),
-            n => (0..32u32)
-                .find(|&i| psx_core::disasm::reg(i) == n || format!("r{i}") == n)
-                .map(|i| Reg::Gpr(i as u8)),
+            n => (0..32u32).find(|&i| psx_core::disasm::reg(i) == n || format!("r{i}") == n).map(|i| Reg::Gpr(i as u8)),
         }
     }
 

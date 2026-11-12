@@ -50,6 +50,9 @@ pub struct TraceConfig {
     pub ranges: Vec<(u32, u32)>,
     /// Cap on written instruction lines (coverage and calls continue past it).
     pub max_lines: u64,
+    /// Count only the words run and the ways branches went (what a
+    /// recording's coverage keeps): no calls, owners, bodies or lines.
+    pub words_only: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -245,6 +248,10 @@ pub struct Tracer {
     /// Each conditional branch run in RAM, by `(KSEG0 address,
     /// instruction)`: how often it was taken and how often it fell through.
     branches: BTreeMap<(u32, u32), [u64; 2]>,
+    /// The branches in RAM by word, the instruction with its ways, where
+    /// one instruction has held the word: no map lookup per branch run.
+    /// The others are in `branches`.
+    branch_slots: Vec<(u32, [u64; 2])>,
     bios_cover: Vec<u32>,
     /// Call targets keyed by the copy the callee's first instruction ran
     /// from (`NO_COPY` outside RAM or when none holds it) and its address.
@@ -387,6 +394,7 @@ impl Tracer {
             ran_from_cache: 0,
             uncopied: BTreeMap::new(),
             branches: BTreeMap::new(),
+            branch_slots: Vec::new(),
             bios_cover: vec![0; BIOS_WORDS],
             calls: BTreeMap::new(),
             pending_call: None,
@@ -454,6 +462,10 @@ impl Tracer {
         };
 
         let moment = self.moment();
+        if self.cfg.words_only {
+            self.count_words(info, phys, k, copy, moment);
+            return;
+        }
         let sp_before = std::mem::replace(&mut self.last_sp, cpu.regs[29]);
 
         // Leaving an exception (the word after `rfe`) drops its frame and
@@ -571,11 +583,8 @@ impl Tracer {
         // The branch whose delay slot ran last went this way.
         if let Some((l, Some(b), _)) = self.last.filter(|(l, _, _)| *l < 0x80_0000) {
             if is_branch(b) {
-                let at = word_addr(l.wrapping_sub(4));
                 let target = l.wrapping_add(((b & 0xFFFF) as i16 as i32 as u32) << 2);
-                let e = self.branches.entry((at, b)).or_default();
-                e[0] += (phys == target) as u64;
-                e[1] += (phys == l.wrapping_add(4)) as u64;
+                self.branch_went(word_addr(l.wrapping_sub(4)), b, phys == target, phys == l.wrapping_add(4));
             }
         }
         let slot = self.last.and_then(|(l, _, i)| (after(l) && has_delay_slot(i)).then_some(i));
@@ -663,6 +672,70 @@ impl Tracer {
         let sep = if fx.is_empty() { "" } else { "  ;" };
         let text = disasm(i, pc);
         self.write(format_args!("{} {} {pc:08x} {i:08x}  {text:<28}{sep}{fx}\n", bus.frames, bus.time()));
+    }
+
+    /// The branch `b` at `at` was taken, or fell through.
+    fn branch_went(&mut self, at: u32, b: u32, taken: bool, fell: bool) {
+        let ways = match at.wrapping_sub(0x8000_0000) as usize / 4 {
+            k if k < RAM_WORDS => {
+                if self.branch_slots.is_empty() {
+                    self.branch_slots = vec![(0, [0, 0]); RAM_WORDS];
+                }
+                match &mut self.branch_slots[k] {
+                    // 0 is no branch: an empty slot.
+                    (i, w) if *i == 0 || *i == b => {
+                        *i = b;
+                        w
+                    }
+                    _ => self.branches.entry((at, b)).or_default(),
+                }
+            }
+            _ => self.branches.entry((at, b)).or_default(),
+        };
+        ways[0] += taken as u64;
+        ways[1] += fell as u64;
+    }
+
+    /// after_step's counting alone (`words_only`): the word run, in the copy
+    /// it ran from, and the way the branch before it went.
+    fn count_words(&mut self, info: &StepInfo, phys: u32, k: usize, copy: u32, moment: u32) {
+        if let Some(e) = info.exception {
+            if e == 0 {
+                self.interrupts += 1;
+                return; // the instruction did not execute
+            }
+            *self.exceptions.entry(e).or_default() += 1;
+        }
+        self.instructions += 1;
+        let after = |l: u32| l.wrapping_add(4) == phys;
+        let continues = self.last.is_some_and(|(l, slot, _)| after(l) && slot.is_none_or(is_branch));
+        if let Some((l, Some(b), _)) = self.last.filter(|(l, _, _)| *l < 0x80_0000) {
+            if is_branch(b) {
+                let target = l.wrapping_add(((b & 0xFFFF) as i16 as i32 as u32) << 2);
+                self.branch_went(word_addr(l.wrapping_sub(4)), b, phys == target, phys == l.wrapping_add(4));
+            }
+        }
+        let slot = self.last.and_then(|(l, _, i)| (after(l) && has_delay_slot(i)).then_some(i));
+        self.last = Some((phys, slot, info.instruction));
+        match phys {
+            0..=0x7F_FFFF => {
+                let ran = Ran { count: 1, first: moment, continues };
+                if copy == NO_COPY {
+                    self.uncopied.entry((k as u32, info.instruction)).or_default().add(ran);
+                } else {
+                    match &mut self.page_copy[k / (CODE_PAGE / 4)] {
+                        Some((c, _, w, _)) if *c == copy => w[k % (CODE_PAGE / 4)].add(ran),
+                        _ => self.counts.entry((copy, k as u32)).or_default().add(ran),
+                    }
+                }
+                self.ram_cover[k] = self.ram_cover[k].saturating_add(1);
+            }
+            0x1FC0_0000..=0x1FC7_FFFF => {
+                let j = (phys as usize - 0x1FC0_0000) / 4;
+                self.bios_cover[j] = self.bios_cover[j].saturating_add(1);
+            }
+            _ => {}
+        }
     }
 
     /// The id of `o` in `owners`, added when new.
@@ -903,7 +976,13 @@ impl Tracer {
     /// Each conditional branch run in RAM as `(KSEG0 address, instruction,
     /// times taken, times fallen through)`, in address order.
     pub fn branches(&self) -> Vec<(u32, u32, u64, u64)> {
-        self.branches.iter().map(|(&(a, i), &[t, f])| (a, i, t, f)).collect()
+        let mut all = self.branches.clone();
+        for (k, &(i, ways)) in self.branch_slots.iter().enumerate().filter(|(_, (i, _))| *i != 0) {
+            let e = all.entry((0x8000_0000 + 4 * k as u32, i)).or_default();
+            e[0] += ways[0];
+            e[1] += ways[1];
+        }
+        all.iter().map(|(&(a, i), &[t, f])| (a, i, t, f)).collect()
     }
 
     /// Executed RAM words as `(copy, KSEG0 address, instruction word, how
@@ -1070,6 +1149,48 @@ mod tests {
             ran(&mut t, &cpu, &bus, pc, i);
         }
         assert_eq!(t.branches(), [(0x8001_0000, BNE, 1, 1), (0x8001_0020, BEQ_NEXT, 1, 1)]);
+    }
+
+    #[test]
+    fn words_only_counts_what_the_whole_tracer_counts() {
+        let mut bus = Bus::new(vec![]);
+        bus.page_writes = vec![0; 0x20_0000 / CODE_PAGE];
+        let cpu = Cpu::new();
+        let lean = TraceConfig { words_only: true, ..Default::default() };
+        let mut whole = Tracer::new(TraceConfig::default(), Box::new(std::io::sink()), None);
+        let mut words = Tracer::new(lean, Box::new(std::io::sink()), None);
+        const BNE: u32 = 0x1420_0003;
+        const JAL: u32 = 0x0C00_4008; // jal 80010020
+        const JR_RA: u32 = 0x03E0_0008;
+        put(&mut bus, 0x8001_0000, BNE);
+        let steps = [
+            (0x8001_0000, BNE),
+            (0x8001_0004, 0),
+            (0x8001_0010, JAL),
+            (0x8001_0014, 0),
+            (0x8001_0020, JR_RA),
+            (0x8001_0024, 0),
+            (0x8001_0018, 0),
+            (0x8001_0000, BNE),
+            (0x8001_0004, 0),
+            (0x8001_0008, 0),
+        ];
+        for (pc, i) in steps {
+            ran(&mut whole, &cpu, &bus, pc, i);
+            ran(&mut words, &cpu, &bus, pc, i);
+        }
+        // A branch at a word another branch held before keeps both.
+        put(&mut bus, 0x8001_0000, 0x1020_0001);
+        for (pc, i) in [(0x8001_0000, 0x1020_0001), (0x8001_0004, 0), (0x8001_0008, 0)] {
+            ran(&mut whole, &cpu, &bus, pc, i);
+            ran(&mut words, &cpu, &bus, pc, i);
+        }
+        let counts =
+            |t: &Tracer| t.executed().into_iter().map(|(c, a, w, r)| (c, a, w, r.count, r.first)).collect::<Vec<_>>();
+        assert_eq!(counts(&words), counts(&whole));
+        assert_eq!(words.branches(), whole.branches());
+        assert_eq!(words.branches().len(), 2);
+        assert_eq!((words.instructions, words.coverage()), (whole.instructions, whole.coverage()));
     }
 
     #[test]

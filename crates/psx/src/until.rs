@@ -86,10 +86,8 @@ impl Until {
 
 /// Whether each condition holds now, with its value (names only).
 pub fn check(conds: &[Until], m: &psx_core::Machine) -> Value {
-    let each: Vec<Value> = conds
-        .iter()
-        .map(|c| json!({"condition": c.text, "holds": c.holds(m), "value": c.col.json_in(m)}))
-        .collect();
+    let each: Vec<Value> =
+        conds.iter().map(|c| json!({"condition": c.text, "holds": c.holds(m), "value": c.col.json_in(m)})).collect();
     json!({"met": each.iter().all(|c| c["holds"] == true), "conditions": each})
 }
 

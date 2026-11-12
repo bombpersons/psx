@@ -86,6 +86,29 @@ pub struct PadFlow {
     masks: BTreeMap<u32, Option<u8>>,
     /// Reads not yet taken by [`PadFlow::take_reads`].
     reads: Vec<PadRead>,
+    /// What is marked, kept to pass over the instructions that touch
+    /// nothing marked (most of them) without looking at the lanes: the
+    /// registers holding a mark, by bit, and `ram`'s bytes per [`PAGE`]
+    /// bytes. Built again from `regs` and `ram` when empty (a loaded flow).
+    #[serde(skip)]
+    marked: u32,
+    #[serde(skip)]
+    pages: Vec<u16>,
+}
+
+/// The bytes of RAM and scratchpad `PadFlow::pages` counts together.
+const PAGE: u32 = 64;
+const RAM_PAGES: usize = 0x20_0000 / PAGE as usize;
+const PAGES: usize = RAM_PAGES + 0x400 / PAGE as usize;
+
+/// `pages`' index for folded physical address `p`: none outside RAM and the
+/// scratchpad, where `ram` is looked at.
+fn page(p: u32) -> Option<usize> {
+    match p {
+        0..0x20_0000 => Some((p / PAGE) as usize),
+        0x1F80_0000..0x1F80_0400 => Some(RAM_PAGES + ((p - 0x1F80_0000) / PAGE) as usize),
+        _ => None,
+    }
 }
 
 const JOY_DATA: u32 = 0x1F80_1040;
@@ -131,8 +154,30 @@ impl PadFlow {
         self.in_handler
     }
 
+    /// `marked` and `pages` from `regs` and `ram`.
+    fn index(&mut self) {
+        self.marked = (0..32).filter(|&r| self.regs[r].iter().any(Option::is_some)).fold(0, |m, r| m | 1 << r);
+        self.pages = vec![0; PAGES];
+        for &a in self.ram.keys() {
+            if let Some(k) = page(a) {
+                self.pages[k] += 1;
+            }
+        }
+    }
+
+    /// Whether `ram` may hold a byte of `[p, p + width)`.
+    fn may_hold(&self, p: u32, width: u32) -> bool {
+        match (page(p), page(p + width - 1)) {
+            (Some(a), Some(b)) => self.pages[a] > 0 || self.pages[b] > 0,
+            _ => true,
+        }
+    }
+
     /// The step `info` just ran; `sio` is the serial port after it.
     pub fn step(&mut self, info: &StepInfo, sio: &Sio0) {
+        if self.pages.is_empty() {
+            self.index();
+        }
         if info.exception.is_some() {
             // Taken instead of the instruction: nothing else happened.
             self.in_handler = true;
@@ -147,20 +192,36 @@ impl PadFlow {
         let (op, rs, rt, rd) = (i >> 26, (i >> 21 & 31) as usize, (i >> 16 & 31) as usize, (i >> 11 & 31) as usize);
         if let Some((addr, reg)) = info.io_load {
             let reg = reg as usize;
-            self.regs[reg] = [None; 4];
+            self.set(reg, [None; 4]);
             let read = sio.last_read.filter(|r| r.is_poll());
             if let (true, Some(r)) = ((JOY_DATA..JOY_DATA + 4).contains(&fold(addr)), read) {
                 let mark = Mark { exchange: r.exchange, pos: r.pos, value: r.value };
                 // A narrow load's byte lands in lane 0; a word repeats the byte.
                 let width = info.mem.map_or(1, |m| m.width as usize);
-                for lane in self.regs[reg].iter_mut().take(width) {
+                let mut l = [None; 4];
+                for lane in l.iter_mut().take(width) {
                     *lane = Some(mark);
                 }
+                self.set(reg, l);
                 if !self.in_handler {
                     self.reads.push(PadRead { pc: info.pc, addr: JOY_DATA, marks: vec![mark], in_handler: false });
                 }
             }
             return;
+        }
+        // An instruction that reads and writes only unmarked registers and
+        // memory leaves everything as it was.
+        let regs = 1 << rs | 1 << rt | 1 << rd | 1 << 31;
+        if self.marked & regs == 0 {
+            match op {
+                0x20..=0x2E => {
+                    let width = info.mem.map_or(4, |m| m.width as u32);
+                    if info.mem.is_none_or(|m| !self.may_hold(fold(m.addr), width)) {
+                        return;
+                    }
+                }
+                _ => return,
+            }
         }
         let imm = i & 0xFFFF;
         match op {
@@ -205,6 +266,11 @@ impl PadFlow {
     fn set(&mut self, r: usize, l: Lanes) {
         if r != 0 {
             self.regs[r] = l;
+            if l.iter().any(Option::is_some) {
+                self.marked |= 1 << r;
+            } else {
+                self.marked &= !(1 << r);
+            }
         }
     }
 
@@ -214,6 +280,10 @@ impl PadFlow {
             return;
         };
         let p = fold(m.addr);
+        if !self.may_hold(p, m.width as u32) {
+            self.set(rt, [None; 4]);
+            return;
+        }
         let mut l = [None; 4];
         let mut buffer = Vec::new();
         for (k, lane) in l.iter_mut().enumerate().take(m.width as usize) {
@@ -238,7 +308,11 @@ impl PadFlow {
             match l.get(k).copied().flatten() {
                 Some(mark) => {
                     let mask = (m.value >> (8 * k)) as u8 ^ mark.value;
-                    self.ram.insert(a, Held { mark, by_handler: self.in_handler, mask });
+                    if self.ram.insert(a, Held { mark, by_handler: self.in_handler, mask }).is_none() {
+                        if let Some(k) = page(a) {
+                            self.pages[k] += 1;
+                        }
+                    }
                     if self.in_handler {
                         let kept = self.masks.entry(a).or_insert(Some(mask));
                         if *kept != Some(mask) {
@@ -247,7 +321,11 @@ impl PadFlow {
                     }
                 }
                 None => {
-                    self.ram.remove(&a);
+                    if self.ram.remove(&a).is_some() {
+                        if let Some(k) = page(a) {
+                            self.pages[k] -= 1;
+                        }
+                    }
                 }
             }
         }
