@@ -80,8 +80,8 @@ pub struct HandoffArgs {
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "is_false")]
     pub replace: bool,
-    /// With a scenario: record the play on the stock game, without psx's adjustments
-    /// (docs/master-plan.md), as scenario record --stock does.
+    /// With a scenario: record the play on the stock game, without latch, steady and fix,
+    /// as scenario_record stock does.
     #[arg(long, requires = "id")]
     #[serde(default, skip_serializing_if = "is_false")]
     pub stock: bool,
@@ -281,8 +281,8 @@ impl HandoffArgs {
             return Err(Error::invalid("name, from, description, replace, stock and held_out go with a scenario id"));
         }
         for x in self.adjust.iter().flatten() {
-            if !["latch", "steady", "off", "fix"].contains(&x.as_str()) {
-                return Err(Error::invalid(format!("adjust: {x} is not one of latch, steady, off, fix")));
+            if !crate::adjust::KNOWN.contains(&x.as_str()) {
+                return Err(Error::invalid(format!("adjust: {x} is not one of {}", crate::adjust::KNOWN.join(", "))));
             }
             if x == "off" && self.id.is_none() {
                 return Err(Error::invalid(
@@ -463,7 +463,8 @@ fn status(dir: &Path, wait: u64) -> crate::Result<(bool, Value)> {
     }
 }
 
-fn read_json(p: &Path) -> Option<Value> {
+/// A JSON file, None when missing or not JSON.
+pub(crate) fn read_json(p: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(p).ok()?).ok()
 }
 

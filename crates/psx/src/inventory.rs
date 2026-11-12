@@ -2328,7 +2328,7 @@ impl InventoryArgs {
         // The runs read, for protocol to tell a corpus run the inventory has
         // not seen (or that was recorded again) from one it has.
         let mut inputs = Vec::new();
-        let mut runs: Vec<(PathBuf, Option<Timeline>, Vec<u8>)> = Vec::new();
+        let mut runs: Vec<Run> = Vec::new();
         for r in &self.ram {
             let dir = at(r);
             let tl = timeline(&dir)?;
@@ -2355,102 +2355,10 @@ impl InventoryArgs {
         let mut exe_keys = BTreeSet::new();
         let mut totals = (0u64, 0u64, 0u64);
         for (i, exe) in exes.iter().enumerate() {
-            let code =
-                Code { base: exe.lo, bytes: exe.payload.clone(), origin: exe.path.clone(), gp: exe.gp, exe: None };
-            let (lo, hi) = (exe.lo, exe.hi());
-            let mut a = Analysis::new(&code, Some((lo, hi)), Box::new(move |x| x >= lo && x < hi));
-            // What ran and was called in the pages holding its code; what
-            // ran inside each call (and exception), in its code.
-            let (mut ran, mut called) = (BTreeSet::new(), BTreeSet::new());
-            let mut bodies: BTreeMap<(bool, u32), Body> = BTreeMap::new();
-            for ((_, tl, _), owner) in runs.iter().zip(&owners) {
-                let Some(tl) = tl else { continue };
-                let mine = |(v, a): (u32, u32)| owner[v as usize] == Some(i) && tl.word(v, a) == code.word(a);
-                for g in &tl.groups {
-                    let here = mine((g.ver, g.entry));
-                    let words: Vec<u32> = g.words.iter().filter(|&&w| mine(w)).map(|w| w.1).collect();
-                    if words.is_empty() {
-                        continue;
-                    }
-                    let b = bodies.entry((here, g.entry)).or_insert_with(|| Body {
-                        entry: g.entry,
-                        here,
-                        how: g.how,
-                        live: true,
-                        ..Default::default()
-                    });
-                    b.words.extend(words);
-                    b.landed.extend(g.landed.iter().filter(|&&w| mine(w)).map(|w| w.1));
-                    for (&w, &h) in g.jumps.iter().filter(|(&w, _)| mine(w)) {
-                        *b.jumps.entry(w.1).or_default() |= h;
-                    }
-                }
-                for (c, (_, page, bytes)) in tl.copies.iter().enumerate().filter(|&(c, _)| owner[c] == Some(i)) {
-                    ran.extend(
-                        tl.ran[c]
-                            .iter()
-                            .filter(|r| !tl.owned[c].contains(&r.0) && code.word(r.0) == Some(r.1))
-                            .map(|r| (r.0, r.1)),
-                    );
-                    for &(x, _) in &tl.calls[c] {
-                        let k = (x - page) as usize;
-                        if bytes.get(k..k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())) == code.word(x) {
-                            called.insert(x);
-                        }
-                    }
-                }
-            }
-            for (_, tl, _) in &runs {
-                let Some(tl) = tl else { continue };
-                a.continues.extend(
-                    tl.continuing().iter().filter(|(x, seen)| holds(|y| code.word(y), *x, seen)).map(|(x, _)| *x),
-                );
-            }
-            a.continues.retain(|x| !called.contains(x));
-            let bodies: Vec<Body> = bodies.into_values().collect();
-            a.place(&facts(&bodies));
-            a.seed(exe.entry, "entry");
-            for &x in &called {
-                a.seed(x, "trace_call");
-            }
-            a.drain();
-            a.executed(&ran);
-            a.guesses();
-            let held: Vec<&PathBuf> =
-                runs.iter().filter(|(_, _, ram)| exe.resident(ram) >= 0.9).map(|(d, _, _)| d).collect();
-            let mut pointer_words = words(&exe.payload, exe.lo);
-            for (_, _, ram) in runs.iter().filter(|(_, _, ram)| exe.resident(ram) >= 0.9) {
-                pointer_words.extend(words(ram, 0x8000_0000));
-            }
-            // Until no new function is found: each round's functions may
-            // call more, and widen the span pointers may land in.
-            while a.pointers(&pointer_words) > 0 {}
-            a.prologues();
-            while a.pointers(&pointer_words) > 0 {}
-            let (functions, rest) = a.report();
-            add(&mut totals, &rest["totals"]);
-            exe_functions.push(
-                a.functions
-                    .values()
-                    .map(|f| {
-                        let calls = f
-                            .words()
-                            .filter_map(|pc| code.word(pc).filter(|w| w >> 26 == 3).map(|w| jump_target(pc, w)))
-                            .collect();
-                        (f.chunks.clone(), calls)
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            exe_keys.extend(a.functions.values().map(|f| {
-                let bytes = chunk_bytes(&f.chunks, |s, e| exe.payload[(s - lo) as usize..(e - lo) as usize].to_vec());
-                (f.start, crate::stamp::sha256(&bytes))
-            }));
-            executables.push(json!({
-                "path": exe.path, "boot": exe.boot, "loads_at": hex(exe.lo), "end": hex(exe.hi()),
-                "entry": hex(exe.entry),
-                "snapshots": held,
-                "totals": rest["totals"], "gaps": rest["gaps"], "functions": functions,
-            }));
+            let (report, functions, keys) = executable(i, exe, &runs, &owners, &mut totals);
+            executables.push(report);
+            exe_functions.push(functions);
+            exe_keys.extend(keys);
         }
 
         // Code no executable holds, found in each moment of each run's
@@ -2471,111 +2379,7 @@ impl InventoryArgs {
             switches: BTreeMap::new(),
             memo: BTreeMap::new(),
         };
-        // Again until nothing changes, each time with every start found for
-        // the code each moment holds, in whichever moment (a call there may
-        // come only in another): the same code is split the same way.
-        let mut before: Option<BTreeSet<Key>> = None;
-        for _ in 0..8 {
-            let now: BTreeSet<Key> = finder.found.keys().cloned().collect();
-            if before.as_ref() == Some(&now) {
-                break;
-            }
-            before = Some(now);
-            finder.known = finder.found.iter().map(|((s, _), f)| f.known(*s)).collect();
-            finder.found.clear();
-            for (run, (_, tl, _)) in runs.iter().enumerate() {
-                if let Some(tl) = tl {
-                    take_timeline(&mut finder, tl, run);
-                }
-            }
-            for (run, (dir, tl, ram)) in runs.iter().enumerate() {
-                let pages = ram.len() / PAGE as usize;
-                // A traced run's RAM at its end holds its last moment's code,
-                // and the calls running then.
-                let live = tl.as_ref().map(|tl| {
-                    let last = tl.copies.len().saturating_sub(1) as u32;
-                    let word = |b: &[u8], o: usize| b.get(o..o + 4).map(|w| w.to_vec());
-                    let mut live = BTreeSet::new();
-                    for (k, (_, page, bytes)) in tl.copies.iter().enumerate() {
-                        for (x, _) in tl.calls[k].iter().filter(|r| during(&r.1, last)) {
-                            if word(bytes, (x - page) as usize) == word(ram, (x & 0x1F_FFFF) as usize) {
-                                live.insert(*x);
-                            }
-                        }
-                    }
-                    live
-                });
-                let owner = (0..pages)
-                    .map(|p| resident(&exes, 0x8000_0000 + p as u32 * PAGE, &ram[p * PAGE as usize..][..PAGE as usize]))
-                    .collect();
-                let mut m = Moment {
-                    ram: ram.clone(),
-                    known: vec![true; pages],
-                    owner,
-                    continues: BTreeSet::new(),
-                    fresh: None,
-                    live,
-                };
-                let seeds = finder.exe_calls(&m);
-                let name = dir.file_name().unwrap_or_default().to_string_lossy();
-                let when = format!("end of run {name}");
-                let Some(tl) = tl else {
-                    // The bodies of what ran found in the other runs' moments
-                    // that its RAM holds.
-                    let mut more: Vec<Known> = finder.found.iter().map(|((s, _), f)| f.known(*s)).collect();
-                    more.retain(|x| !finder.known.contains(x));
-                    finder.known.extend(more);
-                    finder.take(
-                        Some((run, u32::MAX)),
-                        &mut m,
-                        &seeds,
-                        |_| (Vec::new(), BTreeSet::new()),
-                        &when,
-                        None,
-                        true,
-                    );
-                    continue;
-                };
-                // A traced run's end is one more moment: what ran inside each
-                // call whose words RAM holds all as they ran, and no guess
-                // takes a word RAM holds as it ran inside a call.
-                let (mut held, mut bodies): (BTreeMap<u32, u32>, Vec<Body>) = (BTreeMap::new(), Vec::new());
-                for g in &tl.groups {
-                    let mut whole = true;
-                    for &(v, a) in &g.words {
-                        let o = (a & 0x1F_FFFF) as usize;
-                        let at = ram.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-                        let same = at.is_some() && tl.word(v, a) == at;
-                        whole &= same;
-                        if same && m.owner.get(o / PAGE as usize) == Some(&None) && a >= 0x8001_0000 {
-                            *held.entry(a).or_default() += 1;
-                        }
-                    }
-                    if whole {
-                        bodies.push(Body {
-                            entry: g.entry,
-                            here: m.allowed(&exes, g.entry),
-                            how: g.how,
-                            words: g.words.iter().map(|w| w.1).filter(|&w| m.allowed(&exes, w)).collect(),
-                            landed: g.landed.iter().map(|w| w.1).collect(),
-                            jumps: g.jumps.iter().map(|(w, &h)| (w.1, h)).collect(),
-                            live: m.live.as_ref().is_some_and(|l| l.contains(&g.entry)),
-                        });
-                    }
-                }
-                bodies.retain(|b| !b.words.is_empty());
-                let facts = facts(&bodies);
-                finder.take(
-                    Some((run, u32::MAX)),
-                    &mut m,
-                    &seeds,
-                    |_| (facts, BTreeSet::new()),
-                    &when,
-                    Some(&held),
-                    false,
-                );
-            }
-        }
+        find_in_runs(&mut finder, &runs, &exes);
         let Finder { mut found, exe_keys, .. } = finder;
         // A function cut off where its moment knew no code is the start of
         // one found whole in another.
@@ -2594,114 +2398,9 @@ impl InventoryArgs {
         }
         let ambiguous = place_unnamed(&mut found, &contents);
 
-        // Each file code was loaded from is analysed over the extent RAM
-        // held of it, for the functions no run reached.
-        let mut groups: BTreeMap<String, (Option<FileAt>, Vec<Key>)> = BTreeMap::new();
-        for (key, f) in &found {
-            let name = match &f.file {
-                Some((p, at, _, _)) => format!("{} {p}", hex(*at)),
-                None => f.first.clone(),
-            };
-            let g = groups.entry(name).or_insert_with(|| (f.file.clone(), Vec::new()));
-            if let (Some(g), Some(f)) = (&mut g.0, &f.file) {
-                (g.2, g.3) = (g.2.min(f.2), g.3.max(f.3));
-            }
-            g.1.push(key.clone());
-        }
-        for (name, (file, keys)) in groups.iter_mut() {
-            let Some((path, _, lo, hi)) = file.clone() else { continue };
-            if path.starts_with(BIOS) || exes.iter().any(|e| e.path == path) {
-                continue;
-            }
-            let Some(bytes) = contents.iter().find(|c| c.0 == path).map(|c| &c.1) else { continue };
-            let at = file.as_ref().map(|f| f.1).unwrap_or(lo);
-            let span = &bytes[(lo - at) as usize..((hi - at) as usize).min(bytes.len())];
-            let code = Code { base: lo, bytes: span.to_vec(), origin: path.clone(), gp: None, exe: None };
-            let mut a = Analysis::new(&code, Some((lo, hi)), Box::new(move |x| x >= lo.max(0x8001_0000) && x < hi));
-            let starts: BTreeSet<u32> = keys.iter().map(|k| k.0).collect();
-            // The bodies of what ran as found; the rest read again.
-            let inside = |c: &[(u32, u32)]| c.iter().all(|&(x, y)| x >= lo && y <= hi);
-            let placed: Vec<Fact> = keys
-                .iter()
-                .filter_map(|k| Some(carried(k.0, &row_chunks(&found[k].row), found[k].how()?)))
-                .filter(|x| inside(&spans(x.words.iter().copied())))
-                .collect();
-            a.place(&placed);
-            for k in keys.iter().filter(|k| !found[*k].fact()) {
-                a.seed(k.0, "same_code");
-            }
-            a.drain();
-            a.guesses();
-            let ws = words(&code.bytes, lo);
-            while a.pointers(&ws) > 0 {}
-            a.prologues();
-            while a.pointers(&ws) > 0 {}
-            for row in a.report().0 {
-                let s = parse_hex(&row["entry"]);
-                if starts.contains(&s) {
-                    continue;
-                }
-                let b =
-                    chunk_bytes(&row_chunks(&row), |x, y| code.bytes[(x - lo) as usize..(y - lo) as usize].to_vec());
-                let key = (s, crate::stamp::sha256(&b));
-                if found.contains_key(&key) || exe_keys.contains(&key) {
-                    continue;
-                }
-                found.insert(key.clone(), Found { row, bytes: b, file: file.clone(), first: name.clone() });
-                keys.push(key);
-            }
-        }
+        let groups = read_whole(&mut found, &exe_keys, &contents, &exes);
 
-        // Code from a BIOS ROM (the shell it copies into RAM at power-on) is
-        // listed apart, under bios_code.
-        let mut overlays: Vec<Value> = Vec::new();
-        let mut bios_code: Vec<Value> = Vec::new();
-        for (name, (file, mut keys)) in groups {
-            keys.sort();
-            let (mut instructions, mut blocks, mut pointers) = (0u64, 0u64, 0u64);
-            let mut functions = Vec::new();
-            for key in &keys {
-                let f = &found[key];
-                let mut row = f.row.clone();
-                row["sha256"] = json!(key.1);
-                instructions += row["instructions"].as_u64().unwrap_or(0);
-                blocks += row["blocks"].as_u64().unwrap_or(0);
-                pointers += row["found_by"].as_array().is_some_and(|b| b.iter().all(|h| h == "pointer")) as u64;
-                // Its bytes, for coverage to tell it from code loaded over it.
-                let keep = overlay_bytes(&ctx.root, &key.1);
-                if let Some(d) = keep.parent() {
-                    std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
-                }
-                std::fs::write(&keep, &f.bytes).map_err(|e| Error::io(&keep, e))?;
-                functions.push(row);
-            }
-            let start = keys.first().map(|k| k.0).unwrap_or(0);
-            let end = keys.iter().map(|k| parse_hex(&found[k].row["end"])).max().unwrap_or(start);
-            let t = json!({"functions": functions.len(), "instructions": instructions, "blocks": blocks,
-                "found_only_through_pointers": pointers});
-            let file_json = file.as_ref().map(|(p, at, lo, hi)| {
-                let mut f = json!({"path": p, "loads_at": hex(*at), "in_ram": {"start": hex(*lo), "end": hex(*hi)}});
-                if let Some(u) = unpacked.iter().find(|u| u.name == *p) {
-                    f["unpacked"] = u.info.clone();
-                }
-                f
-            });
-            // Code no file holds is read only around the code found in it:
-            // a function far from all of it is not listed.
-            let bounded_by = if file.is_some() { "file" } else { "found_code" };
-            let entry = json!({
-                "name": name, "start": hex(start), "end": hex(end), "file": file_json, "bounded_by": bounded_by,
-                "totals": t, "functions": functions,
-            });
-            if file.as_ref().is_some_and(|f| f.0.starts_with(BIOS)) {
-                bios_code.push(entry);
-            } else {
-                add(&mut totals, &t);
-                overlays.push(entry);
-            }
-        }
-        overlays.sort_by_key(|o| parse_hex(&o["start"]));
-        bios_code.sort_by_key(|o| parse_hex(&o["start"]));
+        let (overlays, bios_code) = listed(&ctx.root, groups, &found, &unpacked, &mut totals)?;
         let unpacked_report = unpacked_report(&unpacked, &overlays);
 
         let out = self.out.as_ref().map(|p| at(p)).unwrap_or_else(|| default_out(ctx));
@@ -2766,6 +2465,341 @@ impl InventoryArgs {
             "next": next,
         }))
     }
+}
+
+/// A run the inventory reads: its directory, its traced timeline and its
+/// RAM at its end.
+type Run = (PathBuf, Option<Timeline>, Vec<u8>);
+
+/// An executable's functions: from its entry, the calls and bodies the
+/// runs' timelines saw in its code and pointers into it. Its report, its
+/// functions for the finder, and their keys.
+fn executable(
+    i: usize,
+    exe: &Exe,
+    runs: &[Run],
+    owners: &[Vec<Option<usize>>],
+    totals: &mut (u64, u64, u64),
+) -> (Value, Vec<ExeFunction>, Vec<Key>) {
+    let code = Code { base: exe.lo, bytes: exe.payload.clone(), origin: exe.path.clone(), gp: exe.gp, exe: None };
+    let (lo, hi) = (exe.lo, exe.hi());
+    let mut a = Analysis::new(&code, Some((lo, hi)), Box::new(move |x| x >= lo && x < hi));
+    // What ran and was called in the pages holding its code; what
+    // ran inside each call (and exception), in its code.
+    let (mut ran, mut called) = (BTreeSet::new(), BTreeSet::new());
+    let mut bodies: BTreeMap<(bool, u32), Body> = BTreeMap::new();
+    for ((_, tl, _), owner) in runs.iter().zip(owners) {
+        let Some(tl) = tl else { continue };
+        let mine = |(v, a): (u32, u32)| owner[v as usize] == Some(i) && tl.word(v, a) == code.word(a);
+        for g in &tl.groups {
+            let here = mine((g.ver, g.entry));
+            let words: Vec<u32> = g.words.iter().filter(|&&w| mine(w)).map(|w| w.1).collect();
+            if words.is_empty() {
+                continue;
+            }
+            let b = bodies.entry((here, g.entry)).or_insert_with(|| Body {
+                entry: g.entry,
+                here,
+                how: g.how,
+                live: true,
+                ..Default::default()
+            });
+            b.words.extend(words);
+            b.landed.extend(g.landed.iter().filter(|&&w| mine(w)).map(|w| w.1));
+            for (&w, &h) in g.jumps.iter().filter(|(&w, _)| mine(w)) {
+                *b.jumps.entry(w.1).or_default() |= h;
+            }
+        }
+        for (c, (_, page, bytes)) in tl.copies.iter().enumerate().filter(|&(c, _)| owner[c] == Some(i)) {
+            ran.extend(
+                tl.ran[c]
+                    .iter()
+                    .filter(|r| !tl.owned[c].contains(&r.0) && code.word(r.0) == Some(r.1))
+                    .map(|r| (r.0, r.1)),
+            );
+            for &(x, _) in &tl.calls[c] {
+                let k = (x - page) as usize;
+                if bytes.get(k..k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())) == code.word(x) {
+                    called.insert(x);
+                }
+            }
+        }
+    }
+    for (_, tl, _) in runs {
+        let Some(tl) = tl else { continue };
+        a.continues
+            .extend(tl.continuing().iter().filter(|(x, seen)| holds(|y| code.word(y), *x, seen)).map(|(x, _)| *x));
+    }
+    a.continues.retain(|x| !called.contains(x));
+    let bodies: Vec<Body> = bodies.into_values().collect();
+    a.place(&facts(&bodies));
+    a.seed(exe.entry, "entry");
+    for &x in &called {
+        a.seed(x, "trace_call");
+    }
+    a.drain();
+    a.executed(&ran);
+    a.guesses();
+    let held: Vec<&PathBuf> = runs.iter().filter(|(_, _, ram)| exe.resident(ram) >= 0.9).map(|(d, _, _)| d).collect();
+    let mut pointer_words = words(&exe.payload, exe.lo);
+    for (_, _, ram) in runs.iter().filter(|(_, _, ram)| exe.resident(ram) >= 0.9) {
+        pointer_words.extend(words(ram, 0x8000_0000));
+    }
+    // Until no new function is found: each round's functions may
+    // call more, and widen the span pointers may land in.
+    while a.pointers(&pointer_words) > 0 {}
+    a.prologues();
+    while a.pointers(&pointer_words) > 0 {}
+    let (functions, rest) = a.report();
+    add(totals, &rest["totals"]);
+    let functions_found = a
+        .functions
+        .values()
+        .map(|f| {
+            let calls =
+                f.words().filter_map(|pc| code.word(pc).filter(|w| w >> 26 == 3).map(|w| jump_target(pc, w))).collect();
+            (f.chunks.clone(), calls)
+        })
+        .collect::<Vec<_>>();
+    let keys = a.functions.values().map(|f| {
+        let bytes = chunk_bytes(&f.chunks, |s, e| exe.payload[(s - lo) as usize..(e - lo) as usize].to_vec());
+        (f.start, crate::stamp::sha256(&bytes))
+    });
+    let report = json!({
+        "path": exe.path, "boot": exe.boot, "loads_at": hex(exe.lo), "end": hex(exe.hi()),
+        "entry": hex(exe.entry),
+        "snapshots": held,
+        "totals": rest["totals"], "gaps": rest["gaps"], "functions": functions,
+    });
+    (report, functions_found, keys.collect())
+}
+
+/// The code no executable holds, in each moment of each run's timeline and
+/// in each run's RAM at its end. Again until nothing changes, each time
+/// with every start found for the code each moment holds, in whichever
+/// moment (a call there may come only in another): the same code is split
+/// the same way.
+fn find_in_runs(finder: &mut Finder, runs: &[Run], exes: &[Exe]) {
+    let mut before: Option<BTreeSet<Key>> = None;
+    for _ in 0..8 {
+        let now: BTreeSet<Key> = finder.found.keys().cloned().collect();
+        if before.as_ref() == Some(&now) {
+            break;
+        }
+        before = Some(now);
+        finder.known = finder.found.iter().map(|((s, _), f)| f.known(*s)).collect();
+        finder.found.clear();
+        for (run, (_, tl, _)) in runs.iter().enumerate() {
+            if let Some(tl) = tl {
+                take_timeline(finder, tl, run);
+            }
+        }
+        for (run, (dir, tl, ram)) in runs.iter().enumerate() {
+            let pages = ram.len() / PAGE as usize;
+            // A traced run's RAM at its end holds its last moment's code,
+            // and the calls running then.
+            let live = tl.as_ref().map(|tl| {
+                let last = tl.copies.len().saturating_sub(1) as u32;
+                let word = |b: &[u8], o: usize| b.get(o..o + 4).map(|w| w.to_vec());
+                let mut live = BTreeSet::new();
+                for (k, (_, page, bytes)) in tl.copies.iter().enumerate() {
+                    for (x, _) in tl.calls[k].iter().filter(|r| during(&r.1, last)) {
+                        if word(bytes, (x - page) as usize) == word(ram, (x & 0x1F_FFFF) as usize) {
+                            live.insert(*x);
+                        }
+                    }
+                }
+                live
+            });
+            let owner = (0..pages)
+                .map(|p| resident(exes, 0x8000_0000 + p as u32 * PAGE, &ram[p * PAGE as usize..][..PAGE as usize]))
+                .collect();
+            let mut m = Moment {
+                ram: ram.clone(),
+                known: vec![true; pages],
+                owner,
+                continues: BTreeSet::new(),
+                fresh: None,
+                live,
+            };
+            let seeds = finder.exe_calls(&m);
+            let name = dir.file_name().unwrap_or_default().to_string_lossy();
+            let when = format!("end of run {name}");
+            let Some(tl) = tl else {
+                // The bodies of what ran found in the other runs' moments
+                // that its RAM holds.
+                let mut more: Vec<Known> = finder.found.iter().map(|((s, _), f)| f.known(*s)).collect();
+                more.retain(|x| !finder.known.contains(x));
+                finder.known.extend(more);
+                finder.take(
+                    Some((run, u32::MAX)),
+                    &mut m,
+                    &seeds,
+                    |_| (Vec::new(), BTreeSet::new()),
+                    &when,
+                    None,
+                    true,
+                );
+                continue;
+            };
+            // A traced run's end is one more moment: what ran inside each
+            // call whose words RAM holds all as they ran, and no guess
+            // takes a word RAM holds as it ran inside a call.
+            let (mut held, mut bodies): (BTreeMap<u32, u32>, Vec<Body>) = (BTreeMap::new(), Vec::new());
+            for g in &tl.groups {
+                let mut whole = true;
+                for &(v, a) in &g.words {
+                    let o = (a & 0x1F_FFFF) as usize;
+                    let at = ram.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+                    let same = at.is_some() && tl.word(v, a) == at;
+                    whole &= same;
+                    if same && m.owner.get(o / PAGE as usize) == Some(&None) && a >= 0x8001_0000 {
+                        *held.entry(a).or_default() += 1;
+                    }
+                }
+                if whole {
+                    bodies.push(Body {
+                        entry: g.entry,
+                        here: m.allowed(exes, g.entry),
+                        how: g.how,
+                        words: g.words.iter().map(|w| w.1).filter(|&w| m.allowed(exes, w)).collect(),
+                        landed: g.landed.iter().map(|w| w.1).collect(),
+                        jumps: g.jumps.iter().map(|(w, &h)| (w.1, h)).collect(),
+                        live: m.live.as_ref().is_some_and(|l| l.contains(&g.entry)),
+                    });
+                }
+            }
+            bodies.retain(|b| !b.words.is_empty());
+            let facts = facts(&bodies);
+            finder.take(Some((run, u32::MAX)), &mut m, &seeds, |_| (facts, BTreeSet::new()), &when, Some(&held), false);
+        }
+    }
+}
+
+/// The functions placed by the file code was loaded from, or the code they
+/// were first found in. Each file is analysed over the extent RAM held of
+/// it, for the functions no run reached.
+fn read_whole(
+    found: &mut BTreeMap<Key, Found>,
+    exe_keys: &BTreeSet<Key>,
+    contents: &[(String, Vec<u8>)],
+    exes: &[Exe],
+) -> BTreeMap<String, (Option<FileAt>, Vec<Key>)> {
+    let mut groups: BTreeMap<String, (Option<FileAt>, Vec<Key>)> = BTreeMap::new();
+    for (key, f) in found.iter() {
+        let name = match &f.file {
+            Some((p, at, _, _)) => format!("{} {p}", hex(*at)),
+            None => f.first.clone(),
+        };
+        let g = groups.entry(name).or_insert_with(|| (f.file.clone(), Vec::new()));
+        if let (Some(g), Some(f)) = (&mut g.0, &f.file) {
+            (g.2, g.3) = (g.2.min(f.2), g.3.max(f.3));
+        }
+        g.1.push(key.clone());
+    }
+    for (name, (file, keys)) in groups.iter_mut() {
+        let Some((path, _, lo, hi)) = file.clone() else { continue };
+        if path.starts_with(BIOS) || exes.iter().any(|e| e.path == path) {
+            continue;
+        }
+        let Some(bytes) = contents.iter().find(|c| c.0 == path).map(|c| &c.1) else { continue };
+        let at = file.as_ref().map(|f| f.1).unwrap_or(lo);
+        let span = &bytes[(lo - at) as usize..((hi - at) as usize).min(bytes.len())];
+        let code = Code { base: lo, bytes: span.to_vec(), origin: path.clone(), gp: None, exe: None };
+        let mut a = Analysis::new(&code, Some((lo, hi)), Box::new(move |x| x >= lo.max(0x8001_0000) && x < hi));
+        let starts: BTreeSet<u32> = keys.iter().map(|k| k.0).collect();
+        // The bodies of what ran as found; the rest read again.
+        let inside = |c: &[(u32, u32)]| c.iter().all(|&(x, y)| x >= lo && y <= hi);
+        let placed: Vec<Fact> = keys
+            .iter()
+            .filter_map(|k| Some(carried(k.0, &row_chunks(&found[k].row), found[k].how()?)))
+            .filter(|x| inside(&spans(x.words.iter().copied())))
+            .collect();
+        a.place(&placed);
+        for k in keys.iter().filter(|k| !found[*k].fact()) {
+            a.seed(k.0, "same_code");
+        }
+        a.drain();
+        a.guesses();
+        let ws = words(&code.bytes, lo);
+        while a.pointers(&ws) > 0 {}
+        a.prologues();
+        while a.pointers(&ws) > 0 {}
+        for row in a.report().0 {
+            let s = parse_hex(&row["entry"]);
+            if starts.contains(&s) {
+                continue;
+            }
+            let b = chunk_bytes(&row_chunks(&row), |x, y| code.bytes[(x - lo) as usize..(y - lo) as usize].to_vec());
+            let key = (s, crate::stamp::sha256(&b));
+            if found.contains_key(&key) || exe_keys.contains(&key) {
+                continue;
+            }
+            found.insert(key.clone(), Found { row, bytes: b, file: file.clone(), first: name.clone() });
+            keys.push(key);
+        }
+    }
+    groups
+}
+
+/// The overlays, and the code from a BIOS ROM (the shell it copies into
+/// RAM at power-on) listed apart, each function's bytes kept for coverage.
+fn listed(
+    root: &Path,
+    groups: BTreeMap<String, (Option<FileAt>, Vec<Key>)>,
+    found: &BTreeMap<Key, Found>,
+    unpacked: &[Unpacked],
+    totals: &mut (u64, u64, u64),
+) -> crate::Result<(Vec<Value>, Vec<Value>)> {
+    let mut overlays: Vec<Value> = Vec::new();
+    let mut bios_code: Vec<Value> = Vec::new();
+    for (name, (file, mut keys)) in groups {
+        keys.sort();
+        let (mut instructions, mut blocks, mut pointers) = (0u64, 0u64, 0u64);
+        let mut functions = Vec::new();
+        for key in &keys {
+            let f = &found[key];
+            let mut row = f.row.clone();
+            row["sha256"] = json!(key.1);
+            instructions += row["instructions"].as_u64().unwrap_or(0);
+            blocks += row["blocks"].as_u64().unwrap_or(0);
+            pointers += row["found_by"].as_array().is_some_and(|b| b.iter().all(|h| h == "pointer")) as u64;
+            // Its bytes, for coverage to tell it from code loaded over it.
+            let keep = overlay_bytes(root, &key.1);
+            if let Some(d) = keep.parent() {
+                std::fs::create_dir_all(d).map_err(|e| Error::io(d, e))?;
+            }
+            std::fs::write(&keep, &f.bytes).map_err(|e| Error::io(&keep, e))?;
+            functions.push(row);
+        }
+        let start = keys.first().map(|k| k.0).unwrap_or(0);
+        let end = keys.iter().map(|k| parse_hex(&found[k].row["end"])).max().unwrap_or(start);
+        let t = json!({"functions": functions.len(), "instructions": instructions, "blocks": blocks,
+            "found_only_through_pointers": pointers});
+        let file_json = file.as_ref().map(|(p, at, lo, hi)| {
+            let mut f = json!({"path": p, "loads_at": hex(*at), "in_ram": {"start": hex(*lo), "end": hex(*hi)}});
+            if let Some(u) = unpacked.iter().find(|u| u.name == *p) {
+                f["unpacked"] = u.info.clone();
+            }
+            f
+        });
+        // Code no file holds is read only around the code found in it:
+        // a function far from all of it is not listed.
+        let bounded_by = if file.is_some() { "file" } else { "found_code" };
+        let entry = json!({
+            "name": name, "start": hex(start), "end": hex(end), "file": file_json, "bounded_by": bounded_by,
+            "totals": t, "functions": functions,
+        });
+        if file.as_ref().is_some_and(|f| f.0.starts_with(BIOS)) {
+            bios_code.push(entry);
+        } else {
+            add(totals, &t);
+            overlays.push(entry);
+        }
+    }
+    overlays.sort_by_key(|o| parse_hex(&o["start"]));
+    bios_code.sort_by_key(|o| parse_hex(&o["start"]));
+    Ok((overlays, bios_code))
 }
 
 /// Each unpacked file and the overlays whose code is its bytes: one no

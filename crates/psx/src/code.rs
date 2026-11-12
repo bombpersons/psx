@@ -123,7 +123,7 @@ impl Op for XrefsArgs {
                     code.gp = Some(g);
                 }
                 let addr = |s: &str| crate::commands::addr_arg(s, "address");
-                let (lo, hi) = match target.split_once('-') {
+                let (lo, hi) = match crate::commands::split_range(&target) {
                     Some((l, h)) => (addr(l)?, addr(h)?),
                     None => {
                         let a = addr(&target)?;

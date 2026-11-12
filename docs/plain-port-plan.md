@@ -211,8 +211,8 @@ and textures.
 - psx web's replay runs `--replay` and reads `frames.json`. It no longer
   looks for `frames.rs`. The port key hashes the workspace's code.
 - `assets_textures`' `scene.psxscene` goes, along with the Bevy scene
-  viewer it was for. The renderer add-on's example could take over that
-  job later.
+  viewer it was for (done). The renderer add-on's example could take over
+  that job later.
 - The guide, tool descriptions and port next's items say "the template"
   and `psx_scenario`'s runner. Topic setup lists the add-ons.
 - CI formats and tests the base template and each add-on on its own.

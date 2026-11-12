@@ -74,7 +74,7 @@ pub fn set(root: &Path, rec: &str, on: bool) -> crate::Result<Vec<String>> {
 /// refused; nothing outside a repository or with nothing to commit.
 pub fn commit(root: &Path, rec: &str, message: &str, v: &mut Value) {
     let (jsonl, coverage) = (format!("{SCENARIOS}/{rec}.jsonl"), format!("{SCENARIOS}/{rec}.coverage.json"));
-    match super::status::Git::commit_alone(root, &[&jsonl, &coverage, GOAL], message) {
+    match crate::git::commit_alone(root, &[&jsonl, &coverage, GOAL], message) {
         Ok(Some(c)) => v["committed"] = json!(c),
         Ok(None) => {}
         Err(e) => v["commit_problem"] = json!(e),
@@ -86,23 +86,18 @@ pub fn commit(root: &Path, rec: &str, message: &str, v: &mut Value) {
 fn starting_in(root: &Path, scenario: &str, name: &str) -> Vec<String> {
     use std::io::BufRead;
     let dir = root.join(SCENARIOS).join(scenario);
-    let mut out: Vec<String> = std::fs::read_dir(&dir)
+    crate::scenario::recording_names(root, scenario)
         .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-        .filter(|p| {
+        .filter(|n| {
             let mut first = String::new();
-            let read = std::fs::File::open(p).map(|f| std::io::BufReader::new(f).read_line(&mut first));
+            let read = std::fs::File::open(dir.join(format!("{n}.jsonl")))
+                .map(|f| std::io::BufReader::new(f).read_line(&mut first));
             let header = read.ok().and_then(|_| serde_json::from_str::<Value>(&first).ok());
             let from = header.as_ref().and_then(|h| h["producer"]["details"]["from"].as_str());
             from.and_then(|f| psx_scenario::scenario::Continues::parse(f).ok()).is_some_and(|c| c.recording == name)
         })
-        .filter_map(|p| Some(format!("{scenario}/{}", p.file_stem()?.to_string_lossy())))
-        .collect();
-    out.sort();
-    out
+        .map(|n| format!("{scenario}/{n}"))
+        .collect()
 }
 
 /// Why the agent's call of `tool` with `args` is refused: it names a

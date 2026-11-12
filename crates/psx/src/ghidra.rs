@@ -455,7 +455,8 @@ fn import(input: &Input) -> Result<Import> {
         let snap = crate::ram::load(path)?;
         let mut ranges = Vec::new();
         for spec in &input.ranges {
-            let (lo, hi) = spec.split_once('-').ok_or_else(|| Error::invalid("range must be LO-HI (end exclusive)"))?;
+            let (lo, hi) = crate::commands::split_range(spec)
+                .ok_or_else(|| Error::invalid("range must be LO-HI (end exclusive)"))?;
             let lo = ram_address(crate::commands::addr_arg(lo, "range start")?)?;
             let raw_hi = crate::commands::addr_arg(hi, "range end")?;
             let hi = ram_address(raw_hi.checked_sub(1).ok_or_else(|| Error::invalid("invalid range end"))?)? + 1;

@@ -5,6 +5,8 @@ it the run boots from power-on. run never downloads.
 
 ## Frames and input
 
+A frame in run's and scenario_record's arguments (frames, input's frame,
+trace_frames) is a field: one vblank, as the debugger's fields counts.
 frames, input and trace windows count from the run start (run_frame);
 frame in logs is absolute (since power-on, or the state's own origin). Row
 N of a sample is memory after N fields, before field N's input.
@@ -33,8 +35,9 @@ variable like any other (topic code): until on it waits on the item.
 ## Adjustments
 
 The original runs adjusted to the port's model, as its recordings run it.
-run (so each new step of a chain), scenario_record and scenario_play take latch,
-steady and fix by default, each where it applies: latch where the
+run (so each new step of a chain) and scenario_record take latch, steady
+and fix by default (scenario_play with a scenario too; without one, none),
+each where it applies: latch where the
 glossary's binding builds for the run's medium (it gives the tick), fix
 where fixes/ holds C (C that does not build fails the run). run's report
 names them (adjust), says what they did (adjusted) and why any did not
@@ -73,8 +76,17 @@ fix_build runs a kept one in place of fixes/.
   of its clocks and the GPU draws without taking time; timers, the CD, the
   SPU and video keep the real clock. fields_per_tick shows how many ticks
   took each number of fields.
+- off: the functions a scenario's [off] table names (a function's name or
+  hex address, with the value it returns) return at once when the CPU
+  reaches them: systems the port does not have yet, so its recordings
+  hold only what the port has. It changes the game, not its timing; a
+  recording's off_calls counts each one's calls, and port_status lists
+  them (off) and whether the port's code cites them yet. It applies only
+  to a scenario's recordings: scenario_record (stock too, as it is the
+  scenario's scope, not its timing), scenario_play with a scenario,
+  scenario_adjust_check, and run with recording.
 
-Either can change what a game does. scenario_adjust_check records a
+Any of them can change what a game does. scenario_adjust_check records a
 scenario again from its state, stock and adjusted, and gives each
 quantity's first tick where they differ (adjust names one alone, to
 tell which caused it): a press taking effect a tick sooner is latch's

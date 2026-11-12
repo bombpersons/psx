@@ -26,7 +26,7 @@ pub fn of(root: &Path) -> Value {
         "progress": jsonl(&root.join(crate::port::status::PROGRESS)),
         "inventory": jsonl(&root.join(".psx/inventory_history.jsonl")),
         "calls": calls(root),
-        "git": git(root),
+        "git": commits(root),
         "decomp": crate::decomp::counts(root),
         "messages": crate::messages::all(root).iter()
             .map(|m| json!({"t": m["t"], "from": m["from"]})).collect::<Vec<_>>(),
@@ -95,15 +95,12 @@ fn calls(root: &Path) -> Value {
 }
 
 /// Every commit, oldest first: when, its subject, and the lines it added and removed in the code and elsewhere.
-fn git(root: &Path) -> Value {
-    let out = std::process::Command::new("git")
-        .args(["log", "--reverse", "--no-merges", "--format=%x1e%h%x1f%ct%x1f%s", "--numstat"])
-        .current_dir(root)
-        .output()
-        .ok()
-        .filter(|o| o.status.success());
-    let Some(out) = out else { return json!([]) };
-    let text = String::from_utf8_lossy(&out.stdout);
+fn commits(root: &Path) -> Value {
+    let Some(text) =
+        crate::git::text(root, &["log", "--reverse", "--no-merges", "--format=%x1e%h%x1f%ct%x1f%s", "--numstat"])
+    else {
+        return json!([]);
+    };
     let mut commits = Vec::new();
     for rec in text.split('\x1e').filter(|r| !r.trim().is_empty()) {
         let mut lines = rec.lines();

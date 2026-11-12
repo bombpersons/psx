@@ -27,7 +27,6 @@ use crate::commands::{Ctx, Op, Outcome};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 #[derive(clap::Args, Deserialize, JsonSchema)]
 pub struct TemplateUpdateArgs {
@@ -322,9 +321,9 @@ fn psx_version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), env!("PSX_BUILD_ID"))
 }
 
+/// `sha256:HEX`, as the template's manifest keeps a file's hash.
 fn sha256(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    format!("sha256:{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>())
+    format!("sha256:{}", crate::stamp::sha256(bytes))
 }
 
 /// A manifest path: relative, `/`-separated, with no `.`, `..`, empty or

@@ -686,13 +686,7 @@ fn jsonl(p: &Path) -> Vec<Value> {
 
 /// The last commit's time (ms), from git.
 fn last_commit(root: &Path) -> Option<u64> {
-    let out = std::process::Command::new("git")
-        .args(["log", "-1", "--format=%ct"])
-        .current_dir(root)
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok().map(|s| s * 1000)
+    crate::git::text(root, &["log", "-1", "--format=%ct"])?.trim().parse::<u64>().ok().map(|s| s * 1000)
 }
 
 /// How much of the call log the page is sent at first.
@@ -859,16 +853,7 @@ fn recordings(root: &Path) -> Value {
     let scenarios: Vec<Value> = crate::scenario::ids(root)
         .into_iter()
         .map(|id| {
-            let dir = root.join(crate::scenario::SCENARIOS).join(&id);
-            let mut names: Vec<String> = std::fs::read_dir(&dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-                .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-                .collect();
-            names.sort();
+            let names = crate::scenario::recording_names(root, &id);
             let recs: Vec<Value> = names
                 .iter()
                 .map(|n| {

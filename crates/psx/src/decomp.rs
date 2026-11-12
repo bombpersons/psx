@@ -1345,13 +1345,7 @@ pub fn check_key(root: &Path, names: &Names, function: &str) -> (String, String)
 
 fn save_check(root: &Path, names: &Names, function: &str, from: &Value, v: &Value) {
     let (sources, names_key) = check_key(root, names, function);
-    let commit = std::process::Command::new("git")
-        .current_dir(root)
-        .args(["rev-parse", "--verify", "-q", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let commit = crate::git::head(root);
     let first = v["cases"].as_array().and_then(|c| c.iter().find(|c| c["passed"] == false)).cloned();
     let kept = json!({
         "function": function, "status": v["status"], "passed": v["passed"], "failed": v["failed"],

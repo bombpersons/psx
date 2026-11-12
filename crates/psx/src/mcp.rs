@@ -5,8 +5,8 @@
 //! carries only the protocol; diagnostics go to stderr.
 //!
 //! Differences from the CLI, all MCP-only:
-//! - `return_screen: true` on `run` (and a few others) attaches the final
-//!   screen as an image content block.
+//! - `return_screen: true` on `run`, `debug_show` and `scenario_play` attaches
+//!   the final screen as an image content block.
 //! - Every call has a hard wall-clock cap (its `timeout` + 60 s, or 15 minutes).
 //!   A job that overruns it is reported as `timeout` and left to finish in the
 //!   background, except supervised Ghidra workers, which are stopped.
@@ -47,7 +47,6 @@ pub struct McpArgs {
     pub require_project_root: bool,
 }
 
-/// Inline result limit; larger results are spilled to a file.
 /// Results larger than this go to a file, with a summary inline: every
 /// result stays in the agent's context for the rest of its session.
 const INLINE_LIMIT: usize = 32 * 1024;
@@ -152,7 +151,7 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::media_cmd::ExeArgs>("disc_exe", "Parse a PS-X EXE header (entry pc, gp, load ranges, stack, region marker, hashes) from a file or image.cue::/PATH, e.g. the BOOT path from disc.").read_only(),
         def::<crate::assets_cmd::AssetsScanArgs>("assets_scan", "Find TIM/TMD/VAB/VAG assets by validated signatures in disc files (image.cue::/PATH, /DIR/), disc images, host files or directories, and RAM dumps; archives and external parsers extend it. Paged; no hit does not prove absence. See guide topic assets.").heavy(),
         def::<crate::assets_cmd::AssetsExtractArgs>("assets_extract", "Convert scanned assets into out: TIM to PNG, TMD to glTF, VAB/VAG to WAV with adpcm_sha256 per waveform, keeping original bytes and provenance. entry extracts one raw archive entry; brief=true returns counts. See guide topic assets.").heavy(),
-        def::<crate::textures::TexturesArgs>("assets_textures", "Decode VRAM texture pages to PNGs: every page/CLUT a captured field used (run_dir a debugger stop's dir from debug_show gpu; plus textures/scene.psxscene, its layout), or one page and clut by hand from any vram.bin."),
+        def::<crate::textures::TexturesArgs>("assets_textures", "Decode VRAM texture pages to PNGs: every page/CLUT a captured field used (run_dir a debugger stop's dir from debug_show gpu), or one page and clut by hand from any vram.bin."),
         def::<crate::vram_diff::VramDiffArgs>("assets_diff", "Compare two raw VRAM dumps pixel by pixel, optionally within a region: differing pixel counts, channel deltas, sample pixels and an optional diff PNG."),
         def::<crate::media_cmd::MemcardArgs>("assets_memcard", "List the saves on a raw 128 KiB memory card image (.mcd/.mcr): product code, blocks used, title, icon frames and free blocks.").read_only(),
         def::<crate::code::DisasmArgs>("code_disasm", "Disassemble MIPS from an EXE (source) or run RAM (ram) at addr, or the heuristic function containing function. Resolves lui pairs and gp-relative references; text=true gives a listing. See guide topic code.").read_only(),
@@ -171,8 +170,8 @@ pub fn tools() -> Vec<ToolDef> {
         def::<crate::run::RunCmdArgs>("run", "Run a disc, EXE, BIOS boot or checkpoint (from_state) for bounded frames on the native core. Drive it with input/replay; observe with sample, watch, watch_reads, trace, trace_cd or trace_spu; save_state makes checkpoints. Returns run_dir and the report; summary shortens it. See guide topic run.").heavy().screen(),
         def::<crate::states::StatesSaveArgs>("states_save", "Name a state an earlier run or handoff made; its chain from power-on comes from the runs' reports. See guide topic setup."),
         def::<crate::debug::DebugStartArgs>("debug_start", "A run that stops between calls: starts where run would (media, from_state or recording, the port's adjustments), before its first field. Returns its id (other debug calls default to the latest). See guide topic debug.").heavy(),
-        def::<crate::debug::DebugGoArgs>("debug_go", "Go on to a new stop: pc, write, read, until, tick, draw, fields, ticks or instructions; history, trace, gpu, sample, watch and watch_reads keep what happens on the way. Returns why and where, the PC and its function.").heavy(),
-        def::<crate::debug::DebugShowArgs>("debug_show", "Look at the debugging session's stop: registers (default), values, bytes, history, screen, stops, gpu (the latest capture), hardware.").screen(),
+        def::<crate::debug::DebugGoArgs>("debug_go", "Go on to a new stop: pc, write, read, until, tick, draw, fields, ticks or instructions; history, trace, gpu, sample, sample_pc, watch and watch_reads keep what happens on the way. Returns why and where, the PC and its function.").heavy(),
+        def::<crate::debug::DebugShowArgs>("debug_show", "Look at the debugging session's stop: registers (default), value, bytes, history, screen, stops, stack, gpu (the latest capture), hardware.").screen(),
         def::<crate::debug::DebugSetArgs>("debug_set", "Poke memory, set a register or hold a pad state at the stop; a new stop, which debug_back undoes."),
         def::<crate::debug::DebugBackArgs>("debug_back", "Go back to the stop this one came from, or to=N; every stop is kept until debug_end."),
         def::<crate::debug::DebugSaveArgs>("debug_save", "Write the stop's machine state to a file, to continue from with run from_state (no name: save_as names states)."),
@@ -277,7 +276,8 @@ fn prepare(tool: &ToolDef, args: Map<String, Value>) -> crate::Result<(Value, bo
     Ok((Value::Object(args), screen))
 }
 
-/// Path of the final screen PNG in a `run` or `native` result.
+/// Path of the screen PNG in a `run`, `debug_show`, `scenario_play` or `read`
+/// result.
 fn screen_path(tool: &str, v: &Value) -> Option<String> {
     let p = match tool {
         "run" => {

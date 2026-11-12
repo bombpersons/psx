@@ -157,6 +157,19 @@ pub fn ids(root: &Path) -> Vec<String> {
     out
 }
 
+/// The names of the recordings under `scenarios/<id>/` (their `.jsonl`),
+/// sorted.
+pub fn recording_names(root: &Path, id: &str) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(root.join(SCENARIOS).join(id))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.strip_suffix(".jsonl").map(String::from))
+        .collect();
+    out.sort();
+    out
+}
+
 /// A scenario file, its glossary and its recordings, with what is wrong
 /// with them.
 pub struct Loaded {
@@ -613,8 +626,9 @@ pub struct ScenarioRecordArgs {
     #[arg(long)]
     #[serde(default)]
     pub replace: bool,
-    /// Record the stock game: none of the adjustments psx makes to how the original meets
-    /// the machine (docs/master-plan.md), which recordings otherwise get and name.
+    /// Record the stock game: without latch, steady and fix (guide topic run), which
+    /// recordings otherwise get and name. The scenario's [off] still applies: it is the
+    /// scenario's scope, not its timing.
     #[arg(long)]
     #[serde(default)]
     pub stock: bool,
@@ -1215,7 +1229,7 @@ pub struct ScenarioAdjustCheckArgs {
     /// scenario's `[off]` table, `fix`: fixes/), to tell which one a
     /// difference comes from; repeatable. Default: all of them, as
     /// recordings are made.
-    #[arg(long = "adjust", value_parser = ["latch", "steady", "off", "fix"])]
+    #[arg(long = "adjust", value_parser = clap::builder::PossibleValuesParser::new(crate::adjust::KNOWN))]
     #[serde(default)]
     pub adjust: Vec<String>,
 }

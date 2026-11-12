@@ -215,15 +215,11 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
         }
     }
     let mut list = Vec::new();
-    let mut images: Vec<String> = Vec::new();
-    let mut image_of: BTreeMap<(i64, i64, i64, i64, i64), usize> = BTreeMap::new();
     for ((px, py, d, cx, cy), (uv, uses)) in pairs {
         let clut = (cx >= 0).then_some((cx as i32, cy as i32));
         let base = format!("page_{px}_{py}_{d}bpp{}", clut.map(|(x, y)| format!("_clut_{x}_{y}")).unwrap_or_default());
         let full =
             save(format!("{base}.png"), decode_page(&vram, px as i32, py as i32, d as u8, clut, [0, 0, 255, 255])?)?;
-        image_of.insert((px, py, d, cx, cy), images.len());
-        images.push(format!("{base}.png"));
         let crop = [uv[0] as i32, uv[1] as i32, uv[2].max(uv[0]) as i32, uv[3].max(uv[1]) as i32];
         let used = save(format!("{base}_used.png"), decode_page(&vram, px as i32, py as i32, d as u8, clut, crop)?)?;
         let mut entry = json!({"page": {"x": px, "y": py, "depth": d}, "clut": clut, "uses": uses, "uv_bounds": crop, "full": full, "used": used});
@@ -239,154 +235,12 @@ pub fn run(run_dir: &Path, page: Option<&str>, clut: Option<&str>, out: Option<&
         }
         list.push(entry);
     }
-    let scene = scene(&frame, &images, &image_of);
-    let scene_path = out_dir.join("scene.psxscene");
-    let bytes = serde_json::to_vec_pretty(&scene).map_err(|e| Error::new("internal", e))?;
-    std::fs::write(&scene_path, bytes).map_err(|e| Error::io(&scene_path, e))?;
     Ok(json!({
         "source": frame_path,
         "vram": vram_file,
         "note": "decoded from `vram`: gpu_frame_vram.bin is the VRAM at the end of the captured frame, vram.bin the run's final VRAM (older captures only have vram.bin); PNG alpha 0 = transparent (0000h), 128 = STP bit (blends on semi-transparent primitives), 255 = opaque",
         "textures": list,
-        "scene": {"path": scene_path, "elements": scene["elements"].as_array().map_or(0, |a| a.len()), "skipped_primitives": scene["skipped_primitives"]},
     }))
-}
-
-/// The frame's layout, in draw order:
-/// - `sprite`: a textured rect or axis-aligned textured quad, i.e. an image
-///   sub-rectangle at a screen rectangle (with flips), or an untextured fill;
-/// - `mesh3d`: a polygon whose vertices the capture lifted back to GTE view
-///   space (x right, y down, z forward), with UV and colour;
-/// - `mesh`: any other polygon as triangles of screen position, UV and colour
-///   (quads split as the hardware draws them: 0-1-2, 1-2-3).
-///
-/// Positions are relative to the drawing offset (the buffer's screen origin).
-/// Lines are counted as skipped.
-///
-/// Format 2: image alpha 128 marks STP texels, so a `semi` element blends
-/// only those (format 1 blended every texel); `dither` says whether the GPU
-/// dithers the polygon (shaded or texture-modulated).
-fn scene(frame: &Value, images: &[String], image_of: &BTreeMap<(i64, i64, i64, i64, i64), usize>) -> Value {
-    let mut elements = Vec::new();
-    let mut skipped: BTreeMap<String, u64> = BTreeMap::new();
-    let num = |v: &Value| v.as_i64().unwrap_or(0);
-    for c in frame["commands"].as_array().into_iter().flatten() {
-        let kind = c["kind"].as_str().unwrap_or("");
-        let (ox, oy) = (num(&c["offset"][0]), num(&c["offset"][1]));
-        let textured = c["textured"] == json!(true);
-        let t = &c["texpage"];
-        let image = if textured {
-            let key = (
-                num(&t["x"]),
-                num(&t["y"]),
-                t["depth"].as_i64().unwrap_or(15),
-                c["clut"][0].as_i64().unwrap_or(-1),
-                c["clut"][1].as_i64().unwrap_or(-1),
-            );
-            match image_of.get(&key) {
-                Some(&i) => Some(i),
-                None => continue,
-            }
-        } else {
-            None
-        };
-        let semi = c["semi"] == json!(true);
-        let blend = if semi { t["blend"].clone() } else { Value::Null };
-        // Texture modulation is colour/128 (128 = unchanged); raw textures ignore colour.
-        let raw = c["raw"] == json!(true);
-        // Captures record whether the GPU dithered the polygon (E1h bit 9 and
-        // shading/modulation); older ones did not: assume E1h enabled it.
-        let dither = c["dither"].as_bool().unwrap_or(c["gouraud"] == json!(true) || (textured && !raw));
-        let colour = |v: &Value| -> [f64; 3] {
-            [0, 1, 2].map(|k| {
-                let x = v["color"][k].as_f64().unwrap_or(128.0);
-                if textured { if raw { 1.0 } else { x / 128.0 } } else { x / 255.0 }
-            })
-        };
-        let verts: Vec<&Value> = c["vertices"].as_array().into_iter().flatten().collect();
-        let pos = |v: &Value| (num(&v["x"]) - ox, num(&v["y"]) - oy);
-        let uv = |v: &Value| (num(&v["uv"][0]), num(&v["uv"][1]));
-        match kind {
-            "fill" => {
-                let a = &c["area"];
-                // Fills ignore the drawing offset: absolute VRAM, made relative here.
-                elements.push(json!({"kind": "sprite", "image": null, "rect": [num(&a[0]) - ox, num(&a[1]) - oy, num(&a[2]), num(&a[3])],
-                    "color": colour(verts[0]), "command": c["index"]}));
-            }
-            "rect" if !verts.is_empty() => {
-                let (x, y) = pos(verts[0]);
-                let (w, h) = (num(&c["area"][2]), num(&c["area"][3]));
-                let (u, v) = if textured { uv(verts[0]) } else { (0, 0) };
-                elements.push(json!({"kind": "sprite", "image": image, "rect": [x, y, w, h], "uv": textured.then_some([u, v, w, h]),
-                    "flip_x": false, "flip_y": false, "color": colour(verts[0]), "semi": semi, "blend": blend, "command": c["index"]}));
-            }
-            "poly3" | "poly4" if verts.iter().all(|v| v["view"].is_array()) => {
-                // Lifted to 3D by the capture (GTE view-space positions).
-                let tris: &[[usize; 3]] = if verts.len() == 4 { &[[0, 1, 2], [1, 2, 3]] } else { &[[0, 1, 2]] };
-                let vertices: Vec<Value> = verts.iter().map(|v| {
-                    let (u, t) = uv(v);
-                    json!({"x": v["view"][0], "y": v["view"][1], "z": v["view"][2], "u": u, "v": t, "color": colour(v)})
-                }).collect();
-                elements.push(json!({"kind": "mesh3d", "image": image, "vertices": vertices, "triangles": tris, "semi": semi, "blend": blend, "dither": dither, "command": c["index"]}));
-            }
-            "poly3" | "poly4" => {
-                let p: Vec<(i64, i64)> = verts.iter().map(|v| pos(v)).collect();
-                let q: Vec<(i64, i64)> = verts.iter().map(|v| uv(v)).collect();
-                let aligned = textured
-                    && p.len() == 4
-                    && p[0].1 == p[1].1
-                    && p[2].1 == p[3].1
-                    && p[0].0 == p[2].0
-                    && p[1].0 == p[3].0
-                    && q[0].1 == q[1].1
-                    && q[2].1 == q[3].1
-                    && q[0].0 == q[2].0
-                    && q[1].0 == q[3].0
-                    && c["gouraud"] != json!(true);
-                if aligned {
-                    let (x0, x1, y0, y1) =
-                        (p[0].0.min(p[1].0), p[0].0.max(p[1].0), p[0].1.min(p[2].1), p[0].1.max(p[2].1));
-                    let (u0, u1, v0, v1) =
-                        (q[0].0.min(q[1].0), q[0].0.max(q[1].0), q[0].1.min(q[2].1), q[0].1.max(q[2].1));
-                    // A flip is the UV running against the screen direction.
-                    let flip_x = (p[1].0 - p[0].0).signum() * (q[1].0 - q[0].0).signum() < 0;
-                    let flip_y = (p[2].1 - p[0].1).signum() * (q[2].1 - q[0].1).signum() < 0;
-                    if x1 > x0 && y1 > y0 && u1 > u0 && v1 > v0 {
-                        // The GPU interpolates UVs from the pixel's left/top edge, so a
-                        // mirrored quad spanning u1→u0 shows texels u1..u0+1 (not u1-1..u0):
-                        // the sprite's texture rect moves one texel up on a flipped axis.
-                        let uv = [u0 + flip_x as i64, v0 + flip_y as i64, u1 - u0, v1 - v0];
-                        elements.push(json!({"kind": "sprite", "image": image, "rect": [x0, y0, x1 - x0, y1 - y0], "uv": uv,
-                            "flip_x": flip_x, "flip_y": flip_y, "color": colour(verts[0]), "semi": semi, "blend": blend, "command": c["index"]}));
-                        continue;
-                    }
-                }
-                let tris: &[[usize; 3]] = if p.len() == 4 { &[[0, 1, 2], [1, 2, 3]] } else { &[[0, 1, 2]] };
-                let vertices: Vec<Value> = verts
-                    .iter()
-                    .map(|v| {
-                        let (x, y) = pos(v);
-                        let (u, t) = uv(v);
-                        json!({"x": x, "y": y, "u": u, "v": t, "color": colour(v)})
-                    })
-                    .collect();
-                elements.push(json!({"kind": "mesh", "image": image, "vertices": vertices, "triangles": tris, "semi": semi, "blend": blend, "dither": dither, "command": c["index"]}));
-            }
-            "line" | "polyline" => *skipped.entry(kind.to_string()).or_default() += 1,
-            _ => {}
-        }
-    }
-    let d = &frame["summary"]["display"];
-    let g = &frame["summary"]["gte"];
-    json!({
-        "format": 2,
-        "screen": [d["width"].as_i64().unwrap_or(320), d["height"].as_i64().unwrap_or(240)],
-        // GTE projection for mesh3d elements: sx = ofx + h·x/z, sy = ofy + h·y/z.
-        "projection": if g["h"].is_number() { json!({"h": g["h"], "ofx": g["ofx"], "ofy": g["ofy"]}) } else { Value::Null },
-        "images": images,
-        "elements": elements,
-        "skipped_primitives": skipped,
-    })
 }
 
 #[cfg(test)]
@@ -411,95 +265,5 @@ mod tests {
         assert_eq!(&page_indices(&vram, 64, 0, 4)[..4], &[1, 2, 3, 4]);
         assert_eq!(&page_indices(&vram, 128, 0, 8)[..2], &[0xAA, 0xBB]);
         assert_eq!(clut_rgba(&vram, 0, 480, 3), vec![0, 0, 0, 128, 255, 255, 255, 255, 0, 0, 0, 0]);
-    }
-
-    /// Mirrored quads: the exported sprite, sampled the way a GPU samples a
-    /// flipped sprite (pixel centres, nearest), must show exactly the texels the
-    /// PS1 rasteriser (psx-gpu) draws, for every flip combination.
-    #[test]
-    fn mirrored_quads_sample_the_same_texels_as_the_gpu() {
-        let mut gpu = psx_gpu::Gpu::new();
-        // A 15-bit texture page at (0, 0): every texel distinct.
-        for v in 0..32 {
-            for u in 0..32 {
-                gpu.vram.lock_mut().set(u, v, (1 + u as u16) | (v as u16) << 5 | 0x4000);
-            }
-        }
-        gpu.gp0_all(&[0xE300_0000]);
-        gpu.gp0_all(&[0xE400_0000 | 511 << 10 | 1023]);
-        gpu.gp0_all(&[0xE500_0000]);
-        let texpage = 2u32 << 7; // 15 bpp, page (0, 0)
-        let (u0, u1, v0, v1) = (0, 15, 3, 19); // 15 texels wide, 16 tall, like Mega Man's pieces
-        let mut commands = Vec::new();
-        for (k, (fx, fy)) in [(false, false), (true, false), (false, true), (true, true)].into_iter().enumerate() {
-            let (x0, y0) = (100 + 40 * k as i64, 300);
-            let (xa, xb) = if fx { (x0 + 15, x0) } else { (x0, x0 + 15) };
-            let (ya, yb) = if fy { (y0 + 16, y0) } else { (y0, y0 + 16) };
-            let verts = [(xa, ya, u0, v0), (xb, ya, u1, v0), (xa, yb, u0, v1), (xb, yb, u1, v1)];
-            let xy = |x: i64, y: i64| (y as u32) << 16 | (x as u32 & 0xFFFF);
-            let uv = |u: i64, v: i64| (v as u32) << 8 | u as u32;
-            gpu.gp0_all(&[
-                0x2D80_8080,
-                xy(verts[0].0, verts[0].1),
-                uv(verts[0].2, verts[0].3),
-                xy(verts[1].0, verts[1].1),
-                uv(verts[1].2, verts[1].3) | texpage << 16,
-                xy(verts[2].0, verts[2].1),
-                uv(verts[2].2, verts[2].3),
-                xy(verts[3].0, verts[3].1),
-                uv(verts[3].2, verts[3].3),
-            ]);
-            commands.push(json!({"index": k, "kind": "poly4", "offset": [0, 0], "textured": true, "raw": true,
-                "texpage": {"x": 0, "y": 0, "depth": 15}, "clut": null,
-                "vertices": verts.iter().map(|&(x, y, u, v)| json!({"x": x, "y": y, "uv": [u, v], "color": [128, 128, 128]})).collect::<Vec<_>>()}));
-        }
-        let frame = json!({"commands": commands, "summary": {"display": {"width": 320, "height": 240}, "gte": {}}});
-        let mut image_of = BTreeMap::new();
-        image_of.insert((0, 0, 15, -1, -1), 0);
-        let s = scene(&frame, &["page.png".into()], &image_of);
-        let elements = s["elements"].as_array().unwrap();
-        assert_eq!(elements.len(), 4);
-        for e in elements {
-            assert_eq!(e["kind"], "sprite", "{e}");
-            let n = |v: &Value, i: usize| v[i].as_i64().unwrap();
-            let (rx, ry, rw, rh) = (n(&e["rect"], 0), n(&e["rect"], 1), n(&e["rect"], 2), n(&e["rect"], 3));
-            let (tu, tv, tw, th) = (n(&e["uv"], 0), n(&e["uv"], 1), n(&e["uv"], 2), n(&e["uv"], 3));
-            let (fx, fy) = (e["flip_x"] == json!(true), e["flip_y"] == json!(true));
-            for py in 0..rh {
-                for px in 0..rw {
-                    // Normalised pixel centre, mirrored on a flipped axis, then nearest texel.
-                    let mut s = (px as f64 + 0.5) / rw as f64;
-                    let mut t = (py as f64 + 0.5) / rh as f64;
-                    if fx {
-                        s = 1.0 - s;
-                    }
-                    if fy {
-                        t = 1.0 - t;
-                    }
-                    let (u, v) =
-                        ((tu as f64 + s * tw as f64).floor() as i32, (tv as f64 + t * th as f64).floor() as i32);
-                    assert_eq!(
-                        gpu.vram.lock().get((rx + px) as i32, (ry + py) as i32),
-                        gpu.vram.lock().get(u, v),
-                        "element {} pixel ({px}, {py}) samples texel ({u}, {v})",
-                        e["command"]
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn scene_is_format_two_with_dither() {
-        let tri = |c: i64| json!([{"x": 0, "y": 0, "color": [c, 0, 0]}, {"x": 9, "y": 0, "color": [0, c, 0]}, {"x": 0, "y": 9, "color": [0, 0, c]}]);
-        let frame = json!({"commands": [
-            {"index": 0, "kind": "poly3", "offset": [0, 0], "gouraud": true, "semi": true, "texpage": {"blend": 2}, "vertices": tri(255)},
-            {"index": 1, "kind": "poly3", "offset": [0, 0], "vertices": tri(9)},
-        ], "summary": {"display": {"width": 320, "height": 240}, "gte": {}}});
-        let s = scene(&frame, &[], &BTreeMap::new());
-        assert_eq!(s["format"], 2);
-        assert_eq!(s["elements"][0]["dither"], true);
-        assert_eq!(s["elements"][0]["blend"], 2);
-        assert_eq!(s["elements"][1]["dither"], false, "flat untextured polygons are not dithered");
     }
 }

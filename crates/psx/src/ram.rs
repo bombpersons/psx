@@ -1175,7 +1175,8 @@ fn parse_width(w: u8) -> crate::Result<usize> {
 /// `LO-HI` (hex, HI exclusive) → RAM byte offsets.
 fn parse_range(r: Option<&str>) -> crate::Result<(usize, usize)> {
     let Some(r) = r else { return Ok((0, RAM_SIZE)) };
-    let (lo, hi) = r.split_once('-').ok_or_else(|| Error::invalid(format!("range {r:?}: expected LO-HI in hex")))?;
+    let (lo, hi) =
+        crate::commands::split_range(r).ok_or_else(|| Error::invalid(format!("range {r:?}: expected LO-HI in hex")))?;
     let (lo, hi) = (crate::commands::addr_arg(lo, "range start")?, crate::commands::addr_arg(hi, "range end")?);
     let l = match locate(lo, 0) {
         Some(Mem::Ram(o)) => o,

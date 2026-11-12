@@ -14,7 +14,7 @@ recorded, not that the game reached gameplay or that a hypothesis holds.
 
 ## A port
 
-psx port init DEST --media GAME.cue writes the workspace: a template in Rust
+port_init dest media=GAME.cue writes the workspace: a template in Rust
 (game/, a psx_scenario Port with no engine; tools/import/, glossary/,
 vendor/), which the port may use or replace (psx-port.toml names its
 commands; topic setup), goal.toml, STATUS.md, catalogue/, formats/, the
@@ -59,7 +59,7 @@ Rules:
   it until they pass; then see the play get further. A rule built from one
   moment of a long play rarely holds at the next.
 - Choose recordings by what they show. A branch the recordings take only
-  one way (port_status branches=true) is a case none of them has shown:
+  one way (port_status) is a case none of them has shown:
   a short recording that takes it the other way checks the rule there.
   One no recording can reach goes in STATUS.md, with why.
 - Hold recordings out. A play in goal.toml's held_out is judged by
@@ -202,11 +202,10 @@ problems in goal.toml or the catalogue, plays waiting or answered
 reads them), and what stops a recording being judged (unrecorded, unbuilt,
 late_input, unpack).
 
-port_status screens=true draws each work recording on both sides at up to
-32 moments and scores how far the port's picture is from the original's (0
-the same, 100 black against white), with the worst tick of each;
-scenario_show screens=true over that tick shows it. It takes minutes, and
-without it port_status repeats the last scores. It is information only: what
+port_status screens=true scores how far the port's picture is from the
+original's in each work recording, at up to 32 moments (0 the same, 100
+black against white), with its worst tick (scenario_show screens=true shows
+it). It takes minutes; without it port_status repeats the last scores. What
 isn't drawn yet always counts, so read the trend.
 
 Once review_lines lines of game/ and tools/ changed since the last review
@@ -246,8 +245,9 @@ original's formats; the game reads the port's own.
   debug_end: a run that stops at a PC, a write or the tick, to look,
   change and go on or back (debug).
 - ram_diff, ram_search, ram_view: values across snapshots (code).
-- code_disasm, code_xrefs, code_decompile, code_functions, code_symbols:
-  reading code (code).
+- code_disasm, code_xrefs, code_decompile, code_functions, code_symbols,
+  code_names: reading code (code).
+- code_check: decomp/'s C against the original (code).
 - code_inventory, code_coverage, code_coverage_diff: every function, and
   what runs and recordings executed (code).
 - assets_scan, assets_extract, assets_textures, assets_diff,
@@ -255,7 +255,7 @@ original's formats; the game reads the port's own.
 - states_save, states_list, states_rebuild: named start states and their
   chains (setup).
 - scenario_record, scenario_check, scenario_show, scenario_play:
-  recordings.
+  recordings. scenario_adjust_check: what the adjustments change (run).
 - port_init, port_update, port_add, port_status, port_check:
   the port (port_update, port_add: setup). port_vectors: arithmetic test vectors (arithmetic).
-- message: talk with the person (run).
+- message: talk with the person (run). report: a reviewer's (above).

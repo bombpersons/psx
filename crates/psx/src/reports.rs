@@ -55,13 +55,7 @@ impl Op for ReportArgs {
         let Some(dir) = dir(&ctx.root) else {
             return Outcome::from(Error::invalid("no data directory for psx (HOME is not set)"));
         };
-        let head = std::process::Command::new("git")
-            .args(["rev-parse", "--verify", "-q", "HEAD"])
-            .current_dir(&ctx.root)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        let head = crate::git::head(&ctx.root);
         let id = format!("r{}-{}", crate::now_ms(), std::process::id());
         let report = json!({"id": id, "t": crate::now_ms() as u64, "commit": head, "text": text});
         let path = dir.join(format!("{id}.json"));

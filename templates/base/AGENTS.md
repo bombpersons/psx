@@ -48,9 +48,9 @@ own plays are held out unless they give them to you. When they tell you
 one fails, a rule was fitted to what you had: read its code again and
 record that case yourself; never try to see the held-out play.
 
-Choose recordings by what they show. `port_status` with `branches=true`
-lists the branches in the code the recordings ran that they take only one
-way: each is a case no recording has shown yet, and a short recording that
+Choose recordings by what they show. `port_status` lists the branches in
+the code the recordings ran that they take only one way (the first groups;
+`branches=true` lists them all): each is a case no recording has shown yet, and a short recording that
 takes the other way checks the rule there. Write the ones no recording can
 reach in STATUS.md, with why.
 
@@ -89,9 +89,9 @@ tool is there (the guide's topic in brackets has the details):
   `find_tick`), the first start state (`run` with `save_as`) and scenario
   (the guide's Recordings; topic setup).
 - **A recording fails**: `port_check` names the code that wrote the value
-  and the code first run there. `debug_start` on the recording, stopped at
-  a writer (`pc`), at the value (`write`) or at the `tick`, shows that
-  moment in the original; `debug_back` steps back (topic debug).
+  and the code first run there. `debug_start` on the recording, then
+  `debug_go` to a writer (`pc`), to the value (`write`) or to the `tick`,
+  shows that moment in the original; `debug_back` steps back (topic debug).
 - **The code behind a behaviour**: `code_coverage_diff` of recordings doing
   it against ones that don't; `code_xrefs` on a value for its readers and
   writers (topic code).
@@ -135,8 +135,8 @@ vendor/        psx-media and psx-assets (importers), psx-fixed (numbers), psx-gt
 ```
 
 The template has no window, renderer or engine: the game's architecture is
-yours to choose. `psx port add` adds ready-made crates under `addons/` when
-the port wants them (`psx port add full`: a window, a renderer with a PS1
+yours to choose. `port_add` adds ready-made crates under `addons/` when
+the port wants them (`full`: a window, a renderer with a PS1
 and a modern look, the disc import on start-up, menus); they are this
 project's code once added. A port of a few rules needs none.
 
@@ -151,16 +151,16 @@ project's code once added. A port of a few rules needs none.
   the picture once the port draws one.
 - **Scenarios are the port's test.** Each recording of the original
   (`scenarios/<id>/`) is replayed tick by tick in a fresh
-  `Game::headless()`. `psx port check` runs them against the game's
+  `Game::headless()`. `port_check` runs them against the game's
   program, which `src/main.rs` serves with `--psx`, for the verdicts;
   `cargo test -p game --test scenarios` (`game/tests/scenarios.rs`) runs
   them the same way while working, all but the held-out plays, which
-  only port check judges.
+  only `port_check` judges.
 - **`--replay`.** `cargo run -p game -- --replay
   scenarios/<id>/<name>.jsonl --frames DIR` draws a recording a PNG per
   tick from `screen`, for psx web to show beside the original. Keep the
   call to `psx_scenario::replay::main` first in `main`.
-- **Importers** are `tools/import`: `psx port check` runs `cargo run -p
+- **Importers** are `tools/import`: `port_check` runs `cargo run -p
   import -- DISC OUT` and `cargo test -p import`, as `psx-port.toml`
   names them.
 
@@ -187,7 +187,7 @@ yours to decide. What the tools rely on besides the above:
 - **Only importers read the original's formats** (`tools/import`); the
   game reads modern ones (glTF, PNG, common audio and video formats, its
   own data files). The importers write them, record where each output came
-  from (`Provenance::of_disc`, which `psx port check` counts as the file
+  from (`Provenance::of_disc`, which `port_check` counts as the file
   imported), and bump `import::VERSION` whenever their output changes. Set
   `import::SERIALS` to the disc revisions they support and `import::GAME`
   to the original's name. Their tests use a disc made with
@@ -201,7 +201,7 @@ yours to decide. What the tools rely on besides the above:
   structure to copy. A constant tuned until a recording matches fails the
   next one.
 - **Name** what you learn about the original's code (functions, globals,
-  struct fields, locals) in `names/*.names` (psx guide, topic code):
+  struct fields, locals) in `names/*.names` (`guide`, topic code):
   every decompile, disassembly and trace then reads with those names.
 - **Cite** where each constant and non-obvious rule came from: the address,
   the instruction that writes or tests it, or the recording that showed

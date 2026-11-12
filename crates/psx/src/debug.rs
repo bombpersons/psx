@@ -30,10 +30,11 @@ pub enum DebugAction {
     /// Start a session where a run would start (media, state or recording, with the
     /// port's adjustments), stopped before its first field.
     Start(DebugStartArgs),
-    /// Go on until a stop holds (pc, write, read, until, tick, fields, ticks,
+    /// Go on until a stop holds (pc, write, read, until, tick, draw, fields, ticks,
     /// instructions); a new stop.
     Go(DebugGoArgs),
-    /// Look at the stop: registers, memory, quantities, history, the screen, the stops.
+    /// Look at the stop: registers, memory, quantities, history, the screen, the stops,
+    /// the call stack, the GPU capture, the hardware.
     Show(DebugShowArgs),
     /// Write memory or a register, or set the pad, here; a new stop.
     Set(DebugSetArgs),
@@ -77,7 +78,7 @@ pub struct DebugStartArgs {
     #[arg(long)]
     #[serde(default)]
     pub bios: Option<PathBuf>,
-    /// A named state or state file.
+    /// A named state, a state file or a run directory, as run's.
     #[arg(long)]
     #[serde(default)]
     pub from_state: Option<PathBuf>,

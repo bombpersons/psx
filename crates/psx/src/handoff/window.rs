@@ -61,6 +61,43 @@ enum Screen {
     Label(usize),
 }
 
+/// One pass's input: keys and pad buttons pressed since the last, those
+/// held, and the characters typed.
+struct Input {
+    pressed: Vec<String>,
+    held: Vec<String>,
+    pad_pressed: Vec<String>,
+    pad_held: Vec<String>,
+    typed: Vec<char>,
+}
+
+impl Input {
+    fn has(&self, k: &str) -> bool {
+        self.pressed.iter().any(|p| p == k)
+    }
+}
+
+/// What the window keeps between fields besides the game.
+struct Player {
+    /// The controls, and the file they are saved to.
+    b: Bindings,
+    path: Option<std::path::PathBuf>,
+    msg: Message,
+    pads: Pads,
+    audio: Option<Audio>,
+    muted: bool,
+    menu: Menu,
+    screen: Screen,
+    paused: bool,
+    restart_asked: Option<Instant>,
+    note: String,
+    label: String,
+    request_lines: Vec<String>,
+    /// First request line shown, when it is longer than the panel.
+    scroll: usize,
+    request_rows: usize,
+}
+
 pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String), String> {
     let title: String = request.chars().take(60).collect();
     let opts = WindowOptions {
@@ -75,325 +112,41 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
     win.set_target_fps(0);
     let typed = Rc::new(RefCell::new(Vec::new()));
     win.set_input_callback(Box::new(Chars(typed.clone())));
-
-    let path = bindings::default_path();
-    let mut b = Bindings::default();
-    let mut msg = Message::default();
-    match path.as_deref().map(bindings::load) {
-        Some(Ok(Some(saved))) => b = saved,
-        Some(Err(e)) => msg.show(format!("Controls file ignored: {e}")),
-        _ => {}
-    }
-    let mut pads = Pads::new();
-    if let Some(e) = &pads.error {
-        msg.show(format!("No gamepads: {e}"));
-    }
-    let audio = match Audio::open() {
-        Ok(a) => {
-            s.run.m.bus.spu.capture = true;
-            s.run.m.bus.spu.take_samples();
-            Some(a)
-        }
-        Err(e) => {
-            msg.show(format!("No sound: {e}"));
-            None
-        }
-    };
-    let mut muted = false;
-    let mut menu = Menu::default();
-    let mut screen = Screen::Play;
-    let mut paused = false;
-    let mut restart_asked: Option<Instant> = None;
-    let mut note = String::new();
-    let mut label = String::new();
-    let request_lines = wrap(request, COLS);
-    // First request line shown, when it is longer than the panel.
-    let mut scroll = 0usize;
-    let mut request_rows = 1usize;
+    let mut p = Player::new(s, request);
     let mut buf = vec![0u32; W * H];
     let mut next = Instant::now();
     let mut live_at = Instant::now() - Duration::from_secs(5);
 
     loop {
         if !win.is_open() {
-            return Ok((End::Closed, note));
+            return Ok((End::Closed, p.note));
         }
-        pads.poll();
-        let pressed: Vec<String> = win.get_keys_pressed(KeyRepeat::No).iter().map(key_name).collect();
-        let held: Vec<String> = win.get_keys().iter().map(key_name).collect();
-        let pad_pressed = std::mem::take(&mut pads.pressed);
-        let pad_held = pads.held();
-        let has = |k: &str| pressed.iter().any(|p| p == k);
-        let typed_now: Vec<char> = std::mem::take(&mut *typed.borrow_mut());
-
-        match screen {
-            Screen::Play => {
-                let pad_menu = pad_held.iter().any(|p| p == "Start")
-                    && pad_held.iter().any(|p| p == "Select")
-                    && pad_pressed.iter().any(|p| p == "Start" || p == "Select");
-                if has("F1") || pad_menu {
-                    screen = Screen::Menu;
-                    menu.set_status("");
-                } else if has("F12") {
-                    screen = Screen::Note(End::Done);
-                } else if has("F10") {
-                    screen = Screen::Note(End::Declined);
-                } else if has("F6") {
-                    match s.mark(dir) {
-                        Ok(n) => {
-                            label.clear();
-                            screen = Screen::Label(n);
-                        }
-                        Err(e) => msg.show(format!("Mark failed: {e}")),
-                    }
-                } else {
-                    if has("F3") {
-                        paused = !paused;
-                    }
-                    if has("F4") && audio.is_some() {
-                        muted = !muted;
-                        msg.show(if muted { "Sound off (F4 turns it on)." } else { "Sound on." });
-                    }
-                    // Scrolling keys the game is not bound to.
-                    let free = |k: &str| has(k) && !b.keyboard.iter().flatten().any(|bound| bound == k);
-                    let page = request_rows.saturating_sub(1).max(1);
-                    if free("PageDown") {
-                        scroll += page;
-                    }
-                    if free("PageUp") {
-                        scroll = scroll.saturating_sub(page);
-                    }
-                    // Units differ between platforms: only the direction counts (up > 0).
-                    match win.get_scroll_wheel() {
-                        Some((_, dy)) if dy < 0.0 => scroll += WHEEL_LINES,
-                        Some((_, dy)) if dy > 0.0 => scroll = scroll.saturating_sub(WHEEL_LINES),
-                        _ => {}
-                    }
-                    if has("F2") {
-                        match s.rewind() {
-                            Ok(Some(back)) => {
-                                audio.as_ref().inspect(|a| a.clear());
-                                let secs =
-                                    back as f64 * s.run.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64;
-                                msg.show(format!("Went back {secs:.0} s. F2 again goes further."));
-                            }
-                            Ok(None) => msg.show("Nothing further back to rewind to."),
-                            Err(e) => msg.show(format!("Rewind failed: {e}")),
-                        }
-                    }
-                    if has("F5") {
-                        s.quick_save();
-                        msg.show("Quick saved. F7 comes back here.");
-                    }
-                    if has("F7") {
-                        match s.quick_load() {
-                            Ok(true) => {
-                                audio.as_ref().inspect(|a| a.clear());
-                                msg.show("Back at the quick save.")
-                            }
-                            Ok(false) => msg.show("No quick save yet (F5 makes one)."),
-                            Err(e) => msg.show(format!("Quick load failed: {e}")),
-                        }
-                    }
-                    if has("F8") {
-                        if restart_asked.is_some_and(|t| t.elapsed() < RESTART_CONFIRM) {
-                            restart_asked = None;
-                            match s.restart() {
-                                Ok(()) => {
-                                    audio.as_ref().inspect(|a| a.clear());
-                                    msg.show("Started over from the beginning of the handoff.")
-                                }
-                                Err(e) => msg.show(format!("Could not start over: {e}")),
-                            }
-                        } else {
-                            restart_asked = Some(Instant::now());
-                            msg.show("Press F8 again to start over from the beginning of the handoff. Progress since then is lost (the quick save is kept).");
-                        }
-                    }
-                    if !paused {
-                        let fast = held.iter().any(|k| k == "Tab");
-                        for _ in 0..if fast { 4 } else { 1 } {
-                            let (buttons, sticks) = pad_state(s, &b, &held, &pad_held, &pads);
-                            s.frame(buttons, sticks);
-                        }
-                        // Fast forward plays no sound (four fields' worth would not fit).
-                        let samples = s.run.m.bus.spu.take_samples();
-                        if let Some(a) = audio.as_ref().filter(|_| !muted && !fast) {
-                            a.push(&samples);
-                        }
-                    }
-                }
-            }
-            Screen::Menu => {
-                let keys: Vec<&str> = pressed.iter().map(String::as_str).collect();
-                let pad: Vec<&str> = pad_pressed.iter().map(String::as_str).collect();
-                match menu.tick(&mut b, &keys, &pad, !held.is_empty() || !pad_held.is_empty()) {
-                    Outcome::Stay => {}
-                    Outcome::Close => screen = Screen::Play,
-                    Outcome::Save => match &path {
-                        Some(p) => match bindings::save(p, &b) {
-                            Ok(()) => menu.set_status(format!("Saved to {}", p.display())),
-                            Err(e) => menu.set_status(format!("Not saved: {e}")),
-                        },
-                        None => menu.set_status("Not saved: no home directory"),
-                    },
-                }
-            }
-            Screen::Label(n) => {
-                if has("Delete") {
-                    match s.discard_mark(n) {
-                        Ok(()) => msg.show(format!("Mark {n} discarded.")),
-                        Err(e) => msg.show(format!("Could not discard mark {n}: {e}")),
-                    }
-                    screen = Screen::Play;
-                } else if has("Enter") || has("NumPadEnter") || has("Escape") {
-                    let text = if has("Escape") { "" } else { label.trim() };
-                    match s.label_mark(n, text) {
-                        Ok(()) => msg.show(format!("Mark {n} saved.")),
-                        Err(e) => msg.show(format!("Mark {n} saved; label not: {e}")),
-                    }
-                    screen = Screen::Play;
-                } else {
-                    if has("Backspace") {
-                        label.pop();
-                    }
-                    label.extend(typed_now.into_iter().take(200usize.saturating_sub(label.chars().count())));
-                }
-            }
+        p.pads.poll();
+        let input = Input {
+            pressed: win.get_keys_pressed(KeyRepeat::No).iter().map(key_name).collect(),
+            held: win.get_keys().iter().map(key_name).collect(),
+            pad_pressed: std::mem::take(&mut p.pads.pressed),
+            pad_held: p.pads.held(),
+            typed: std::mem::take(&mut *typed.borrow_mut()),
+        };
+        match p.screen {
+            Screen::Play => p.play_keys(s, dir, &input, win.get_scroll_wheel()),
+            Screen::Menu => p.menu_keys(&input),
+            Screen::Label(n) => p.label_keys(s, n, input),
             Screen::Note(end) => {
-                // Esc, or the key that opened it again, goes back to the game.
-                if has("Escape") || has(if end == End::Done { "F12" } else { "F10" }) {
-                    screen = Screen::Play;
-                } else if has("Enter") || has("NumPadEnter") {
-                    return Ok((end, note.trim().to_string()));
-                } else {
-                    if has("Backspace") {
-                        note.pop();
-                    }
-                    note.extend(typed_now.into_iter().take(2000usize.saturating_sub(note.chars().count())));
+                if let Some(note) = p.note_keys(end, input) {
+                    return Ok((end, note));
                 }
             }
         }
-
         draw_game(&mut buf, s);
-        fill(&mut buf, PX, 0, PW, H, PANEL);
-        let mut p = Panel { buf: &mut buf, y: 8 };
-        match screen {
-            Screen::Play => {
-                // The keys and status sit at the bottom; the request takes
-                // the rest of the panel, scrolling when it is longer.
-                let message = msg.current().map(|text| wrap(text, COLS));
-                let bottom = 10 + 3 + message.as_ref().map_or(0, Vec::len);
-                let bottom_y = (H - 8).saturating_sub(bottom * ROW + if message.is_some() { GAP } else { 0 });
-                p.line("THE AGENT ASKS:", YELLOW);
-                let rows = (bottom_y.saturating_sub(GAP + p.y) / ROW).max(2);
-                let shown = if request_lines.len() > rows { rows - 1 } else { rows };
-                request_rows = shown;
-                scroll = scroll.min(request_lines.len().saturating_sub(shown));
-                for l in request_lines.iter().skip(scroll).take(shown) {
-                    p.line(l, WHITE);
-                }
-                if request_lines.len() > rows {
-                    let last = (scroll + shown).min(request_lines.len());
-                    p.line(
-                        &format!("lines {}-{last} of {}: PgUp/PgDn, wheel", scroll + 1, request_lines.len()),
-                        YELLOW,
-                    );
-                }
-                p.y = bottom_y;
-                for (keys, what) in [
-                    ("F12", "Done: hand back, with a note"),
-                    ("F10", "Can't do it: tell the agent why"),
-                    ("F6", "Mark this moment for the agent"),
-                    ("F8", "Start over (press twice)"),
-                    ("F2", "Rewind about 5 s (again: further)"),
-                    ("F5/F7", "Quick save / quick load"),
-                    ("F3", "Pause"),
-                    ("F4", "Sound on/off"),
-                    ("Tab", "Fast forward (hold)"),
-                    ("F1", "Controls (pad: Start+Select)"),
-                ] {
-                    p.line(&format!("{keys:<6}{what}"), GREY);
-                }
-                p.gap();
-                let mode = match (s.dualshock(), s.analog()) {
-                    (false, _) => "digital pad",
-                    (true, false) => "DualShock, digital mode",
-                    (true, true) => "DualShock, analog mode",
-                };
-                let n = pads.names().len();
-                let marks = match s.marks.len() {
-                    0 => String::new(),
-                    1 => "  1 mark".into(),
-                    k => format!("  {k} marks"),
-                };
-                p.line(
-                    &format!("{}frame {}{marks}", if paused { "PAUSED  " } else { "" }, s.rel()),
-                    if paused { YELLOW } else { GREY },
-                );
-                p.line(&format!("{mode}; {n} gamepad{}", if n == 1 { "" } else { "s" }), GREY);
-                let adjust = s.adjustments();
-                if !adjust.is_empty() {
-                    let latch = s.latch_state().map(|l| format!(" (latch: {l})")).unwrap_or_default();
-                    p.line(&format!("adjusted: {}{latch}", adjust.join(", ")), GREY);
-                }
-                match (&audio, muted) {
-                    (Some(a), false) => p.line(&format!("sound: {}", a.name), GREY),
-                    (Some(_), true) => p.line("sound: off (F4)", YELLOW),
-                    (None, _) => p.line("sound: none", GREY),
-                }
-                if let Some(lines) = message {
-                    p.gap();
-                    for l in &lines {
-                        p.line(l, YELLOW);
-                    }
-                }
-            }
-            Screen::Menu => {
-                for (i, (line, selected)) in menu.lines(&b, &pads.names()).iter().enumerate() {
-                    if *selected {
-                        fill(p.buf, PX + 4, p.y - 2, PW - 8, 11, SELECTED);
-                    }
-                    p.wrapped(line, if i == 0 { YELLOW } else { WHITE });
-                }
-            }
-            Screen::Label(n) => {
-                p.line(&format!("MARK {n} SAVED (frame {})", s.rel()), YELLOW);
-                p.gap();
-                p.wrapped("What is happening here? A few words help the agent (optional).", WHITE);
-                p.line("Enter: done", GREY);
-                p.line("Esc: no label", GREY);
-                p.line("Delete: discard this mark", GREY);
-                p.gap();
-                for l in wrap(&format!("{label}_"), COLS) {
-                    p.line(&l, WHITE);
-                }
-            }
-            Screen::Note(end) => {
-                let (head, prompt) = match end {
-                    End::Done => ("HAND BACK TO THE AGENT", "Anything the agent should know? (optional)"),
-                    _ => ("CAN'T DO IT", "Tell the agent why, or what you tried (optional)"),
-                };
-                p.line(head, YELLOW);
-                p.gap();
-                p.wrapped(prompt, WHITE);
-                p.line("Enter: hand back now", GREY);
-                p.line(&format!("Esc or {}: keep playing", if end == End::Done { "F12" } else { "F10" }), GREY);
-                p.gap();
-                // A long note shows its end, where the typing is.
-                let lines = wrap(&format!("{note}_"), COLS);
-                let rows = (H - 8).saturating_sub(p.y) / ROW + 1;
-                for l in &lines[lines.len().saturating_sub(rows)..] {
-                    p.line(l, WHITE);
-                }
-            }
-        }
+        p.draw_panel(&mut buf, s);
         win.update_with_buffer(&buf, W, H).map_err(|e| e.to_string())?;
 
         if live_at.elapsed() >= Duration::from_secs(1) {
             live_at = Instant::now();
-            let state = match screen {
-                Screen::Play if paused => "paused",
+            let state = match p.screen {
+                Screen::Play if p.paused => "paused",
                 Screen::Play => "playing",
                 Screen::Menu => "controls_menu",
                 Screen::Note(_) => "writing_note",
@@ -411,6 +164,330 @@ pub fn play(s: &mut Session, request: &str, dir: &Path) -> Result<(End, String),
         } else if now - next > Duration::from_millis(250) {
             // Too slow to keep up (or a debugger stop): do not race to catch up.
             next = now;
+        }
+    }
+}
+
+impl Player {
+    fn new(s: &mut Session, request: &str) -> Player {
+        let path = bindings::default_path();
+        let mut b = Bindings::default();
+        let mut msg = Message::default();
+        match path.as_deref().map(bindings::load) {
+            Some(Ok(Some(saved))) => b = saved,
+            Some(Err(e)) => msg.show(format!("Controls file ignored: {e}")),
+            _ => {}
+        }
+        let pads = Pads::new();
+        if let Some(e) = &pads.error {
+            msg.show(format!("No gamepads: {e}"));
+        }
+        let audio = match Audio::open() {
+            Ok(a) => {
+                s.run.m.bus.spu.capture = true;
+                s.run.m.bus.spu.take_samples();
+                Some(a)
+            }
+            Err(e) => {
+                msg.show(format!("No sound: {e}"));
+                None
+            }
+        };
+        Player {
+            b,
+            path,
+            msg,
+            pads,
+            audio,
+            muted: false,
+            menu: Menu::default(),
+            screen: Screen::Play,
+            paused: false,
+            restart_asked: None,
+            note: String::new(),
+            label: String::new(),
+            request_lines: wrap(request, COLS),
+            scroll: 0,
+            request_rows: 1,
+        }
+    }
+
+    /// The game's screen: the window's keys, then a field of the game (four
+    /// fast forward) unless paused.
+    fn play_keys(&mut self, s: &mut Session, dir: &Path, i: &Input, wheel: Option<(f32, f32)>) {
+        let has = |k: &str| i.has(k);
+        let pad_menu = i.pad_held.iter().any(|p| p == "Start")
+            && i.pad_held.iter().any(|p| p == "Select")
+            && i.pad_pressed.iter().any(|p| p == "Start" || p == "Select");
+        if has("F1") || pad_menu {
+            self.screen = Screen::Menu;
+            self.menu.set_status("");
+            return;
+        } else if has("F12") {
+            self.screen = Screen::Note(End::Done);
+            return;
+        } else if has("F10") {
+            self.screen = Screen::Note(End::Declined);
+            return;
+        } else if has("F6") {
+            match s.mark(dir) {
+                Ok(n) => {
+                    self.label.clear();
+                    self.screen = Screen::Label(n);
+                }
+                Err(e) => self.msg.show(format!("Mark failed: {e}")),
+            }
+            return;
+        }
+        if has("F3") {
+            self.paused = !self.paused;
+        }
+        if has("F4") && self.audio.is_some() {
+            self.muted = !self.muted;
+            self.msg.show(if self.muted { "Sound off (F4 turns it on)." } else { "Sound on." });
+        }
+        // Scrolling keys the game is not bound to.
+        let free = |k: &str| has(k) && !self.b.keyboard.iter().flatten().any(|bound| bound == k);
+        let page = self.request_rows.saturating_sub(1).max(1);
+        if free("PageDown") {
+            self.scroll += page;
+        }
+        if free("PageUp") {
+            self.scroll = self.scroll.saturating_sub(page);
+        }
+        // Units differ between platforms: only the direction counts (up > 0).
+        match wheel {
+            Some((_, dy)) if dy < 0.0 => self.scroll += WHEEL_LINES,
+            Some((_, dy)) if dy > 0.0 => self.scroll = self.scroll.saturating_sub(WHEEL_LINES),
+            _ => {}
+        }
+        if has("F2") {
+            match s.rewind() {
+                Ok(Some(back)) => {
+                    self.audio.as_ref().inspect(|a| a.clear());
+                    let secs = back as f64 * s.run.m.bus.frame_cycles() as f64 / psx_core::bus::SYSCLK as f64;
+                    self.msg.show(format!("Went back {secs:.0} s. F2 again goes further."));
+                }
+                Ok(None) => self.msg.show("Nothing further back to rewind to."),
+                Err(e) => self.msg.show(format!("Rewind failed: {e}")),
+            }
+        }
+        if has("F5") {
+            s.quick_save();
+            self.msg.show("Quick saved. F7 comes back here.");
+        }
+        if has("F7") {
+            match s.quick_load() {
+                Ok(true) => {
+                    self.audio.as_ref().inspect(|a| a.clear());
+                    self.msg.show("Back at the quick save.")
+                }
+                Ok(false) => self.msg.show("No quick save yet (F5 makes one)."),
+                Err(e) => self.msg.show(format!("Quick load failed: {e}")),
+            }
+        }
+        if has("F8") {
+            if self.restart_asked.is_some_and(|t| t.elapsed() < RESTART_CONFIRM) {
+                self.restart_asked = None;
+                match s.restart() {
+                    Ok(()) => {
+                        self.audio.as_ref().inspect(|a| a.clear());
+                        self.msg.show("Started over from the beginning of the handoff.")
+                    }
+                    Err(e) => self.msg.show(format!("Could not start over: {e}")),
+                }
+            } else {
+                self.restart_asked = Some(Instant::now());
+                self.msg.show("Press F8 again to start over from the beginning of the handoff. Progress since then is lost (the quick save is kept).");
+            }
+        }
+        if !self.paused {
+            let fast = i.held.iter().any(|k| k == "Tab");
+            for _ in 0..if fast { 4 } else { 1 } {
+                let (buttons, sticks) = pad_state(s, &self.b, &i.held, &i.pad_held, &self.pads);
+                s.frame(buttons, sticks);
+            }
+            // Fast forward plays no sound (four fields' worth would not fit).
+            let samples = s.run.m.bus.spu.take_samples();
+            if let Some(a) = self.audio.as_ref().filter(|_| !self.muted && !fast) {
+                a.push(&samples);
+            }
+        }
+    }
+
+    /// The controls menu.
+    fn menu_keys(&mut self, i: &Input) {
+        let keys: Vec<&str> = i.pressed.iter().map(String::as_str).collect();
+        let pad: Vec<&str> = i.pad_pressed.iter().map(String::as_str).collect();
+        match self.menu.tick(&mut self.b, &keys, &pad, !i.held.is_empty() || !i.pad_held.is_empty()) {
+            Outcome::Stay => {}
+            Outcome::Close => self.screen = Screen::Play,
+            Outcome::Save => match &self.path {
+                Some(p) => match bindings::save(p, &self.b) {
+                    Ok(()) => self.menu.set_status(format!("Saved to {}", p.display())),
+                    Err(e) => self.menu.set_status(format!("Not saved: {e}")),
+                },
+                None => self.menu.set_status("Not saved: no home directory"),
+            },
+        }
+    }
+
+    /// Labelling mark `n`.
+    fn label_keys(&mut self, s: &mut Session, n: usize, i: Input) {
+        let has = |k: &str| i.has(k);
+        if has("Delete") {
+            match s.discard_mark(n) {
+                Ok(()) => self.msg.show(format!("Mark {n} discarded.")),
+                Err(e) => self.msg.show(format!("Could not discard mark {n}: {e}")),
+            }
+            self.screen = Screen::Play;
+        } else if has("Enter") || has("NumPadEnter") || has("Escape") {
+            let text = if has("Escape") { "" } else { self.label.trim() };
+            match s.label_mark(n, text) {
+                Ok(()) => self.msg.show(format!("Mark {n} saved.")),
+                Err(e) => self.msg.show(format!("Mark {n} saved; label not: {e}")),
+            }
+            self.screen = Screen::Play;
+        } else {
+            if has("Backspace") {
+                self.label.pop();
+            }
+            let room = 200usize.saturating_sub(self.label.chars().count());
+            self.label.extend(i.typed.into_iter().take(room));
+        }
+    }
+
+    /// Writing the hand-back note: the note, when Enter hands back.
+    fn note_keys(&mut self, end: End, i: Input) -> Option<String> {
+        let has = |k: &str| i.has(k);
+        // Esc, or the key that opened it again, goes back to the game.
+        if has("Escape") || has(if end == End::Done { "F12" } else { "F10" }) {
+            self.screen = Screen::Play;
+        } else if has("Enter") || has("NumPadEnter") {
+            return Some(self.note.trim().to_string());
+        } else {
+            if has("Backspace") {
+                self.note.pop();
+            }
+            let room = 2000usize.saturating_sub(self.note.chars().count());
+            self.note.extend(i.typed.into_iter().take(room));
+        }
+        None
+    }
+
+    /// The panel beside the game, for the screen shown.
+    fn draw_panel(&mut self, buf: &mut [u32], s: &Session) {
+        fill(buf, PX, 0, PW, H, PANEL);
+        let mut p = Panel { buf, y: 8 };
+        match self.screen {
+            Screen::Play => self.draw_play(&mut p, s),
+            Screen::Menu => {
+                for (i, (line, selected)) in self.menu.lines(&self.b, &self.pads.names()).iter().enumerate() {
+                    if *selected {
+                        fill(p.buf, PX + 4, p.y - 2, PW - 8, 11, SELECTED);
+                    }
+                    p.wrapped(line, if i == 0 { YELLOW } else { WHITE });
+                }
+            }
+            Screen::Label(n) => {
+                p.line(&format!("MARK {n} SAVED (frame {})", s.rel()), YELLOW);
+                p.gap();
+                p.wrapped("What is happening here? A few words help the agent (optional).", WHITE);
+                p.line("Enter: done", GREY);
+                p.line("Esc: no label", GREY);
+                p.line("Delete: discard this mark", GREY);
+                p.gap();
+                for l in wrap(&format!("{}_", self.label), COLS) {
+                    p.line(&l, WHITE);
+                }
+            }
+            Screen::Note(end) => {
+                let (head, prompt) = match end {
+                    End::Done => ("HAND BACK TO THE AGENT", "Anything the agent should know? (optional)"),
+                    _ => ("CAN'T DO IT", "Tell the agent why, or what you tried (optional)"),
+                };
+                p.line(head, YELLOW);
+                p.gap();
+                p.wrapped(prompt, WHITE);
+                p.line("Enter: hand back now", GREY);
+                p.line(&format!("Esc or {}: keep playing", if end == End::Done { "F12" } else { "F10" }), GREY);
+                p.gap();
+                // A long note shows its end, where the typing is.
+                let lines = wrap(&format!("{}_", self.note), COLS);
+                let rows = (H - 8).saturating_sub(p.y) / ROW + 1;
+                for l in &lines[lines.len().saturating_sub(rows)..] {
+                    p.line(l, WHITE);
+                }
+            }
+        }
+    }
+
+    /// The game's panel: the request, then the keys and status at the
+    /// bottom; the request takes the rest, scrolling when it is longer.
+    fn draw_play(&mut self, p: &mut Panel, s: &Session) {
+        let message = self.msg.current().map(|text| wrap(text, COLS));
+        let bottom = 10 + 3 + message.as_ref().map_or(0, Vec::len);
+        let bottom_y = (H - 8).saturating_sub(bottom * ROW + if message.is_some() { GAP } else { 0 });
+        p.line("THE AGENT ASKS:", YELLOW);
+        let lines = &self.request_lines;
+        let rows = (bottom_y.saturating_sub(GAP + p.y) / ROW).max(2);
+        let shown = if lines.len() > rows { rows - 1 } else { rows };
+        self.request_rows = shown;
+        self.scroll = self.scroll.min(lines.len().saturating_sub(shown));
+        for l in lines.iter().skip(self.scroll).take(shown) {
+            p.line(l, WHITE);
+        }
+        if lines.len() > rows {
+            let last = (self.scroll + shown).min(lines.len());
+            p.line(&format!("lines {}-{last} of {}: PgUp/PgDn, wheel", self.scroll + 1, lines.len()), YELLOW);
+        }
+        p.y = bottom_y;
+        for (keys, what) in [
+            ("F12", "Done: hand back, with a note"),
+            ("F10", "Can't do it: tell the agent why"),
+            ("F6", "Mark this moment for the agent"),
+            ("F8", "Start over (press twice)"),
+            ("F2", "Rewind about 5 s (again: further)"),
+            ("F5/F7", "Quick save / quick load"),
+            ("F3", "Pause"),
+            ("F4", "Sound on/off"),
+            ("Tab", "Fast forward (hold)"),
+            ("F1", "Controls (pad: Start+Select)"),
+        ] {
+            p.line(&format!("{keys:<6}{what}"), GREY);
+        }
+        p.gap();
+        let mode = match (s.dualshock(), s.analog()) {
+            (false, _) => "digital pad",
+            (true, false) => "DualShock, digital mode",
+            (true, true) => "DualShock, analog mode",
+        };
+        let n = self.pads.names().len();
+        let marks = match s.marks.len() {
+            0 => String::new(),
+            1 => "  1 mark".into(),
+            k => format!("  {k} marks"),
+        };
+        p.line(
+            &format!("{}frame {}{marks}", if self.paused { "PAUSED  " } else { "" }, s.rel()),
+            if self.paused { YELLOW } else { GREY },
+        );
+        p.line(&format!("{mode}; {n} gamepad{}", if n == 1 { "" } else { "s" }), GREY);
+        let adjust = s.adjustments();
+        if !adjust.is_empty() {
+            let latch = s.latch_state().map(|l| format!(" (latch: {l})")).unwrap_or_default();
+            p.line(&format!("adjusted: {}{latch}", adjust.join(", ")), GREY);
+        }
+        match (&self.audio, self.muted) {
+            (Some(a), false) => p.line(&format!("sound: {}", a.name), GREY),
+            (Some(_), true) => p.line("sound: off (F4)", YELLOW),
+            (None, _) => p.line("sound: none", GREY),
+        }
+        if let Some(lines) = message {
+            p.gap();
+            for l in &lines {
+                p.line(l, YELLOW);
+            }
         }
     }
 }

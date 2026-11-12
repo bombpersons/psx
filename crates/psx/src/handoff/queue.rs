@@ -103,9 +103,7 @@ impl Request {
     }
 }
 
-fn read_json(p: &Path) -> Option<Value> {
-    serde_json::from_slice(&std::fs::read(p).ok()?).ok()
-}
+use super::read_json;
 
 fn age_ms(unix_ms: Option<u64>) -> Option<u128> {
     unix_ms.map(|t| crate::now_ms().saturating_sub(t as u128))

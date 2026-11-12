@@ -74,17 +74,11 @@ fn findings(body: &str) -> Vec<(String, bool)> {
     out
 }
 
-fn git(root: &Path, args: &[&str]) -> Option<std::process::Output> {
-    std::process::Command::new("git").args(args).current_dir(root).output().ok()
-}
-
 /// The code's files git doesn't track yet.
 fn untracked(root: &Path) -> Vec<String> {
     let mut args = vec!["ls-files", "--others", "--exclude-standard", "--"];
     args.extend(CODE);
-    git(root, &args)
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
-        .unwrap_or_default()
+    crate::git::text(root, &args).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default()
 }
 
 /// Lines added and removed in the code since `commit`, committed or not,
@@ -94,21 +88,16 @@ fn lines_since(root: &Path, commit: &str) -> usize {
     args.extend(CODE);
     let new: usize =
         untracked(root).iter().map(|f| std::fs::read_to_string(root.join(f)).map_or(0, |t| t.lines().count())).sum();
-    new + git(root, &args)
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .flat_map(|l| l.split('\t').take(2).map(|n| n.parse::<usize>().unwrap_or(0)).collect::<Vec<_>>())
-                .sum()
-        })
+    new + crate::git::text(root, &args)
+        .map(|t| t.lines().flat_map(|l| l.split('\t').take(2).map(|n| n.parse::<usize>().unwrap_or(0))).sum())
         .unwrap_or(0)
 }
 
 /// Lines of the code written since the workspace's first commit, for a
 /// port with no review yet.
 pub fn lines_written(root: &Path) -> usize {
-    git(root, &["rev-list", "--max-parents=0", "HEAD"])
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().last().map(|c| lines_since(root, c)))
+    crate::git::text(root, &["rev-list", "--max-parents=0", "HEAD"])
+        .and_then(|t| t.lines().last().map(|c| lines_since(root, c)))
         .unwrap_or(0)
 }
 
@@ -125,17 +114,15 @@ pub fn read(root: &Path) -> Review {
         Ok(f) => f,
         Err(e) => return Review::Invalid(format!("front matter: {}", e.message())),
     };
-    let known = git(root, &["rev-parse", "--verify", "-q", &format!("{}^{{commit}}", f.commit)])
-        .is_some_and(|o| o.status.success());
+    let known = crate::git::ok(root, &["rev-parse", "--verify", "-q", &format!("{}^{{commit}}", f.commit)]);
     if !known {
         return Review::Invalid(format!("commit {:?}: not a commit of this repository", f.commit));
     }
     // Against the working tree: uncommitted changes count as changes.
     let mut args = vec!["diff", "--name-only", f.commit.as_str(), "--"];
     args.extend(CODE);
-    let mut changed: Vec<String> = git(root, &args)
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
-        .unwrap_or_default();
+    let mut changed: Vec<String> =
+        crate::git::text(root, &args).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
     changed.extend(untracked(root));
     if !changed.is_empty() {
         return Review::Stale { lines: lines_since(root, &f.commit), commit: f.commit, changed };
@@ -181,16 +168,14 @@ fn finding_texts(body: &str) -> Vec<serde_json::Value> {
 /// the commit it reviewed, newest last. A finding a round adds is `new`.
 pub fn rounds(root: &Path) -> serde_json::Value {
     use serde_json::json;
-    let text = |o: Option<std::process::Output>| {
-        o.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-    };
-    let log = text(git(root, &["log", "--reverse", "--format=%H%x1f%ct%x1f%s", "--", REVIEW])).unwrap_or_default();
+    let log =
+        crate::git::text(root, &["log", "--reverse", "--format=%H%x1f%ct%x1f%s", "--", REVIEW]).unwrap_or_default();
     let mut versions: Vec<(Option<String>, u64, String, String)> = log
         .lines()
         .filter_map(|l| {
             let mut f = l.split('\x1f');
             let (h, t, s) = (f.next()?, f.next()?, f.next().unwrap_or(""));
-            let body = text(git(root, &["show", &format!("{h}:{REVIEW}")]))?;
+            let body = crate::git::text(root, &["show", &format!("{h}:{REVIEW}")])?;
             Some((Some(h.to_string()), t.parse::<u64>().ok()? * 1000, s.to_string(), body))
         })
         .collect();
@@ -256,7 +241,7 @@ pub fn diff(root: &Path, from: &str, to: &str) -> Option<String> {
     }
     let mut args = vec!["diff", "--stat=120", "--patch", from, to, "--"];
     args.extend(CODE);
-    let out = git(root, &args).filter(|o| o.status.success())?;
+    let out = crate::git::run(root, &args).filter(|o| o.status.success())?;
     (out.stdout.len() <= 2 << 20).then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -269,7 +254,7 @@ mod tests {
         let d = super::super::tests::tempdir::Dir::new();
         let run = |args: &[&str]| {
             let base = ["-c", "user.name=t", "-c", "user.email=t@t"];
-            assert!(git(&d.0, &[&base[..], args].concat()).unwrap().status.success(), "{args:?}");
+            assert!(crate::git::ok(&d.0, &[&base[..], args].concat()), "{args:?}");
         };
         run(&["init", "-q"]);
         std::fs::create_dir_all(d.0.join("game")).unwrap();
@@ -306,7 +291,7 @@ mod tests {
     fn the_review_holds_while_the_code_is_unchanged_and_answered() {
         let d = super::super::tests::tempdir::Dir::new();
         let root = d.0.as_path();
-        let run = |args: &[&str]| assert!(git(root, args).unwrap().status.success(), "git {args:?}");
+        let run = |args: &[&str]| assert!(crate::git::ok(root, args), "git {args:?}");
         run(&["init", "-q"]);
         run(&["config", "user.email", "t@t"]);
         run(&["config", "user.name", "t"]);
@@ -315,7 +300,7 @@ mod tests {
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "jump"]);
         assert_eq!(read(root), Review::Missing);
-        let head = String::from_utf8(git(root, &["rev-parse", "HEAD"]).unwrap().stdout).unwrap().trim().to_string();
+        let head = crate::git::head(root).unwrap();
         let write =
             |body: &str| std::fs::write(root.join(REVIEW), format!("+++\ncommit = \"{head}\"\n+++\n{body}")).unwrap();
         write("## A finding\nwhat and why\n");

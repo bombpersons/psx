@@ -37,7 +37,7 @@ lines, listing.next_addr continues.
 code_xrefs finds references to an address or a LO-HI range: jal, j and
 branch targets, lui pairs, gp-relative accesses, and aligned data words
 holding the address (pointer and jump tables; no_data skips them). Give gp
-for RAM. A busy global has hundreds: kind keeps loads or stores, bits=MASK
+for RAM. A busy global has hundreds: kinds keeps loads or stores, bits=MASK
 the loads tested with those bits.
 
 code_decompile takes source and addr, importing and analysing on first use;
@@ -85,7 +85,8 @@ both rebuilt on each run, and the agent's names win over them.
 The names files are also every view's names. An address argument (run's
 trace ranges and watches, samples, disasm, xrefs, decompile, ram_view)
 takes a function's or global's name as well as hex: world_collide,
-croc+0x370, RACE.OVL:race_update when overlays share a name. Traces,
+croc->x (through the pointer), RACE.OVL:race_update when overlays share
+a name. Traces,
 watch hits, calls, disasm, xrefs, coverage and ram_view rows print them,
 a function's where its bytes are the inventory's (body_match) and a
 global's as name+0xOFF within its type. symbols adds other symbol files.
@@ -98,7 +99,7 @@ and size asserted), the globals and every function's prototype, so the C
 reads the game's data and calls the original's functions by name.
 code_check function builds decomp/ with a MIPS GCC (context's mips_gcc)
 and replays the captured recordings that reach the function (by the
-coverage kept beside each; scenario and recording choose others, state
+coverage kept beside each; scenarios and recordings choose others, state
 runs the game from a state instead). Calls to it spread over those
 recordings (cases, 8 by default; 3 from a state) each run as the original
 and as the C, from the same moment, and their effects are compared: the
@@ -168,10 +169,10 @@ jump table's cases) are often missing from an analysis of the EXE. Seed one
 from RAM:
 1. Find the table: a trace's "-> target (from pc)" shows the jump into one
    handler; code_xrefs on that handler gives the data word holding it.
-2. ram_view fmt=x32 from the base: entries are code addresses; the first
+2. ram_view as=x32 from the base: entries are code addresses; the first
    word that is not one ends the table.
-3. code_functions with ram, range (the code holding them) and entry once
-   per table entry, gp from the run's registers; decompile them there.
+3. code_functions with ram, ranges (the code holding them) and entries,
+   one per table entry, gp from the run's registers; decompile them there.
 
 ## The inventory and coverage
 
@@ -235,7 +236,7 @@ recording made before the map changed is made again.
 The port's code cites stretches of a program beside functions,
 name+0xSTART..0xEND (end excluded); one position, name+0xAT, counts
 only for a program the recordings have, so a global's field cited the
-same way (croc+0x370) is not taken for one. code_coverage and code_coverage_diff
+same way is not taken for one. code_coverage and code_coverage_diff
 on recordings report programs: stretches read, sites and ways (with a
 map, statements run and routines entered), and in a diff the ones only the
 first set ran, which locate a behaviour's part of the script.

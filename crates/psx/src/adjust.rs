@@ -131,7 +131,7 @@ fn spelling(names: &psx_symbols::names::Names, name: &str) -> Option<String> {
 }
 
 /// The names of the adjustments this psx knows.
-const KNOWN: &[&str] = &["latch", "steady", "off", "fix"];
+pub(crate) const KNOWN: &[&str] = &["latch", "steady", "off", "fix"];
 
 /// `steady`'s clock multiplier for the CPU's own work.
 pub(crate) const STEADY_OVERCLOCK: u32 = 4;
@@ -142,8 +142,8 @@ impl Adjustments {
         Adjustments::default()
     }
 
-    /// What `scenario record` and `scenario play` use unless `stock`: every
-    /// adjustment this psx has.
+    /// latch and steady: what `scenario record` and `scenario play` start
+    /// from unless `stock`, adding the scenario's `off` and the fixes.
     pub fn default_set() -> Adjustments {
         Adjustments { latch: true, steady: true, ..Adjustments::default() }
     }

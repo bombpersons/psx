@@ -116,8 +116,7 @@ pub fn judges(root: &Path, commit: &str, head: Option<&str>) -> bool {
     if commit == head {
         return true;
     }
-    let out = std::process::Command::new("git").args(["diff", "--name-only", commit, head]).current_dir(root).output();
-    out.ok().filter(|o| o.status.success()).is_some_and(|o| String::from_utf8_lossy(&o.stdout).lines().all(inert))
+    crate::git::text(root, &["diff", "--name-only", commit, head]).is_some_and(|t| t.lines().all(inert))
 }
 
 pub fn write(root: &Path, v: &Verdict) -> crate::Result<()> {

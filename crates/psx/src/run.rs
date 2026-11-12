@@ -27,7 +27,7 @@ pub struct RunCmdArgs {
     /// BIOS override; otherwise exact checkpoint identity, project defaults or regional local discovery.
     #[arg(long)]
     pub bios: Option<PathBuf>,
-    /// Frames (vsyncs) to run: from power-on, or from the restored state with --from-state
+    /// Fields (vblanks) to run: from power-on, or from the restored state with --from-state
     /// (default 60). From a recording, its length unless this is less.
     #[arg(long)]
     #[serde(default)]
@@ -54,8 +54,8 @@ pub struct RunCmdArgs {
     #[arg(long = "watch")]
     #[serde(default, rename = "watch")]
     pub watches: Vec<String>,
-    /// Continue from a state instead of power-on: a named state (`states list`) or a
-    /// state file an earlier run wrote (state.bin).
+    /// Continue from a state instead of power-on: a named state (`states list`), a
+    /// state file an earlier run wrote (state.bin) or its run directory.
     #[arg(long)]
     pub from_state: Option<PathBuf>,
     /// Write state.bin into the run directory at the end.
@@ -138,7 +138,8 @@ impl Op for RunCmdArgs {
     }
 }
 
-/// A named state's file under the states directory; any other path as given.
+/// A named state's file under the states directory, a run directory's
+/// state.bin; any other path as given.
 pub(crate) fn named_state(states: &std::path::Path, p: PathBuf) -> PathBuf {
     if let Some(name) = p.to_str() {
         let named = states.join(format!("{name}.bin"));
@@ -146,7 +147,7 @@ pub(crate) fn named_state(states: &std::path::Path, p: PathBuf) -> PathBuf {
             return named;
         }
     }
-    p
+    if p.is_dir() { p.join("state.bin") } else { p }
 }
 
 impl RunCmdArgs {
@@ -412,7 +413,7 @@ pub struct ObserveArgs {
     #[arg(long = "pad-reads")]
     #[serde(default)]
     pub pad_reads: bool,
-    /// The adjustments to the original, as the port's recordings run it (docs/master-plan.md).
+    /// The adjustments to the original, as the port's recordings run it (guide topic run).
     /// By default latch (the pad changes where the glossary binding's tick ends, passing
     /// through where no tick ends for a while), steady (no tick overruns its fields) and fix
     /// (fixes/ built), each where it applies; the report says why any did not. Name some
@@ -452,10 +453,8 @@ pub fn parse_range_at(s: &str, mem: Option<(&[u8], &[u8])>) -> Result<(u32, u32)
 /// a name or a names path (its type's size by default, else 4).
 pub(crate) fn range_at(s: &str, mem: Option<(&[u8], &[u8])>) -> Result<(u32, u32), String> {
     let h = |x: &str| crate::names_bind::address(x).map_err(|e| format!("{e} in {s:?}"));
-    // A `-` that is not a path's `->`.
-    let dash = s.char_indices().find(|&(i, c)| c == '-' && !s[i + 1..].starts_with('>')).map(|(i, _)| i);
-    if let Some(i) = dash {
-        let (a, b) = (h(&s[..i])?, h(&s[i + 1..])?);
+    if let Some((a, b)) = crate::commands::split_range(s) {
+        let (a, b) = (h(a)?, h(b)?);
         return Ok((a, b.checked_sub(a).filter(|&n| n > 0).ok_or_else(|| format!("empty range {s:?}"))?));
     }
     let (a, w) = crate::commands::split_width(s);
@@ -549,11 +548,11 @@ pub struct TraceArgs {
     #[arg(long)]
     #[serde(default)]
     pub trace: bool,
-    /// Start tracing at this frame of the run (default: the start).
+    /// Start tracing at this field of the run (default: the start).
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub trace_from_frame: u64,
-    /// Stop tracing after N frames.
+    /// Stop tracing after N fields.
     #[arg(long)]
     pub trace_frames: Option<u64>,
     /// Only write lines for LO-HI (hex), or a function named in names/ or --symbols; repeatable.

@@ -20,9 +20,7 @@ use gpu_capture::{CapturedFrame, GpuCapture};
 
 use crate::session::{Out, Session};
 
-fn sha256(bytes: &[u8]) -> String {
-    psx_media::disc::sha256_bytes(bytes)
-}
+use crate::stamp::sha256;
 
 /// The glossary's binding, for its quantities and its tick:
 /// built, loaded and checked against the run's media.
@@ -66,7 +64,7 @@ fn adjustments(
         if n.contains(&"stock") && n.len() > 1 {
             return Err(Error::invalid("adjust: stock is the game without adjustments: name it alone"));
         }
-        if let Some(x) = n.iter().find(|x| !["latch", "steady", "fix", "stock"].contains(x)) {
+        if let Some(x) = n.iter().find(|x| **x != "stock" && (!crate::adjust::KNOWN.contains(x) || **x == "off")) {
             return Err(Error::invalid(match *x {
                 "off" => "adjust off: off turns off what a scenario's [off] names; run from a recording of it (recording SCENARIO/NAME)".to_string(),
                 x => format!("adjust {x:?}: run knows latch, steady and fix (by default all three where they apply), or stock"),
@@ -346,36 +344,7 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
     let mut files = serde_json::Map::new();
     let mut report = serde_json::Map::new();
     let mut out = Out { dir: &dir, files: &mut files, report: &mut report, start: start_frame, termination };
-    let m = &s.m;
-    if a.save_state {
-        out.put("state.bin", &m.save_state(media_id.clone()));
-    }
-    let mut cards = Vec::new();
-    for (slot, card) in m.bus.sio0.cards.iter().enumerate() {
-        if let Some(c) = card {
-            let name = format!("memcard{}.mcd", slot + 1);
-            if c.writes > 0 {
-                out.put(&name, &c.data);
-            }
-            cards.push(json!({"slot": slot + 1, "sectors_written": c.writes, "file": (c.writes > 0).then_some(name)}));
-        }
-    }
-    out.put("ram.bin", &m.bus.ram);
-    out.put("scratch.bin", &m.bus.scratch);
-    out.put("vram.bin", &m.bus.gpu.vram.lock().to_bytes());
-    let (w, h, rgba) = m.bus.gpu.display_rgba();
-    let screen = dir.join("screen.png");
-    if write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok() {
-        out.files.insert("screen.png".into(), json!({"path": screen}));
-    }
-    let vram = dir.join("vram.png");
-    if write_png(&vram, 1024, 512, &m.bus.gpu.vram.lock().rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
-        out.files.insert("vram.png".into(), json!({"path": vram}));
-    }
-    if let Some(f) = chosen.as_ref().and_then(|c| c.set.fix_detail()) {
-        // The build it ran, for a chain step to keep (fix_build runs it again).
-        out.put("fix.json", serde_json::to_string_pretty(&f).unwrap_or_default().as_bytes());
-    }
+    let (cards, (w, h)) = write_files(&mut out, &s.m, &a, &media_id, &chosen);
     s.finish(&mut out)?;
     let m = &s.m;
 
@@ -439,6 +408,48 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         report.insert("decomp".into(), d.report(m));
     }
     Ok((complete, Value::Object(report)))
+}
+
+/// The machine's files at the run's end (state, memory cards written, RAM,
+/// VRAM, the screen) and the fix build it ran: the cards' report and the
+/// screen's size.
+fn write_files(
+    out: &mut Out,
+    m: &Machine,
+    a: &RunArgs,
+    media_id: &Option<MediaId>,
+    chosen: &Option<Chosen>,
+) -> (Vec<Value>, (u32, u32)) {
+    if a.save_state {
+        out.put("state.bin", &m.save_state(media_id.clone()));
+    }
+    let mut cards = Vec::new();
+    for (slot, card) in m.bus.sio0.cards.iter().enumerate() {
+        if let Some(c) = card {
+            let name = format!("memcard{}.mcd", slot + 1);
+            if c.writes > 0 {
+                out.put(&name, &c.data);
+            }
+            cards.push(json!({"slot": slot + 1, "sectors_written": c.writes, "file": (c.writes > 0).then_some(name)}));
+        }
+    }
+    out.put("ram.bin", &m.bus.ram);
+    out.put("scratch.bin", &m.bus.scratch);
+    out.put("vram.bin", &m.bus.gpu.vram.lock().to_bytes());
+    let (w, h, rgba) = m.bus.gpu.display_rgba();
+    let screen = out.dir.join("screen.png");
+    if write_png(&screen, w, h, &rgba, png::ColorType::Rgba).is_ok() {
+        out.files.insert("screen.png".into(), json!({"path": screen}));
+    }
+    let vram = out.dir.join("vram.png");
+    if write_png(&vram, 1024, 512, &m.bus.gpu.vram.lock().rgba15(0, 0, 1024, 512), png::ColorType::Rgba).is_ok() {
+        out.files.insert("vram.png".into(), json!({"path": vram}));
+    }
+    if let Some(f) = chosen.as_ref().and_then(|c| c.set.fix_detail()) {
+        // The build it ran, for a chain step to keep (fix_build runs it again).
+        out.put("fix.json", serde_json::to_string_pretty(&f).unwrap_or_default().as_bytes());
+    }
+    (cards, (w, h))
 }
 
 /// Each register as a hex word.
@@ -611,7 +622,7 @@ pub(crate) fn tracer(
 ) -> crate::Result<Tracer> {
     let mut ranges = Vec::new();
     for r in &t.trace_ranges {
-        let (lo, hi) = match r.split_once('-') {
+        let (lo, hi) = match crate::commands::split_range(r) {
             Some((lo, hi)) => (resolve(lo, scopes)?.0, resolve(hi, scopes)?.0),
             None => {
                 let (lo, end) = resolve(r, scopes)?;

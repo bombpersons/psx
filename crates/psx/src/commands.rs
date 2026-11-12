@@ -112,6 +112,13 @@ pub(crate) fn opt_addr(s: &Option<String>, what: &str) -> crate::Result<Option<u
     s.as_deref().map(|a| addr_arg(a, what)).transpose()
 }
 
+/// `LO-HI` split at its `-`, which a names path's `->` is not: every
+/// range argument reads its ends as addresses.
+pub(crate) fn split_range(s: &str) -> Option<(&str, &str)> {
+    let i = s.char_indices().find(|&(i, c)| c == '-' && !s[i + 1..].starts_with('>'))?.0;
+    Some((&s[..i], &s[i + 1..]))
+}
+
 /// `ADDR[:WIDTH]` with ADDR possibly `MODULE:name`: the width is a trailing
 /// decimal after the last colon.
 pub(crate) fn split_width(s: &str) -> (&str, Option<&str>) {
@@ -126,4 +133,17 @@ pub(crate) fn opt_hex(s: &Option<String>, what: &str) -> crate::Result<Option<u3
     s.as_deref()
         .map(|a| psx_media::memmap::parse_hex(a).ok_or_else(|| Error::invalid(format!("bad {what} {a:?} (hex)"))))
         .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_range;
+
+    #[test]
+    fn a_range_splits_at_its_dash_and_never_inside_a_path() {
+        assert_eq!(split_range("80010000-80020000"), Some(("80010000", "80020000")));
+        assert_eq!(split_range("croc->x-croc->0x380"), Some(("croc->x", "croc->0x380")));
+        assert_eq!(split_range("croc->x"), None);
+        assert_eq!(split_range("0x8007515C->0x54"), None);
+    }
 }

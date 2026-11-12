@@ -55,8 +55,8 @@ Other formats need evidence from the code that reads them: trace_cd (topic
 run) finds which run loads a file and where it lands in RAM; a watch on that
 RAM finds the parser; its disassembly is the layout, written in the format's
 doc. assets_scan and assets_extract also take external parsers
-(--archive-parser, --asset-parser, --model-parser, --frame-parser; see their
-help) for a quick look while investigating; the port's importers are its
+(the *_parser arguments, each with its *_args; see their
+descriptions) for a quick look while investigating; the port's importers are its
 own (tools/import on the template).
 
 ## What the game built
@@ -66,8 +66,7 @@ the first whole field from its stop, debug_go draw stops at the end of the
 first field that draws and captures it (any counts fills; primitives or
 textured narrows it). debug_show gpu gives the capture and its directory;
 assets_textures with that directory as run_dir decodes the field's VRAM
-through its CLUTs into PNGs and a .psxscene for the template's --scene
-viewer: screen drawing, not world geometry. assets_diff compares two vram.bin dumps. These,
+through its CLUTs into PNGs: screen drawing, not world geometry. assets_diff compares two vram.bin dumps. These,
 and RAM after a load, are what an importer's test compares against.
 
 Sounds: trace_spu logs which voice keyed which sample; its sample_sha256

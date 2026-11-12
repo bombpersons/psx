@@ -44,7 +44,7 @@ pub const WONT_REACH: &str = "catalogue/wont_reach.toml";
 pub const QUESTIONS: &str = "catalogue/questions.md";
 /// The agent's account of where the port stands.
 pub const STATUS: &str = "STATUS.md";
-pub const SCENARIOS: &str = "scenarios";
+pub use crate::scenario::SCENARIOS;
 /// Where the port's code is, which cites the original by address.
 pub const SOURCES: [&str; 2] = ["game", "tools"];
 
@@ -378,13 +378,7 @@ fn recordings_on_disk(root: &Path) -> Vec<String> {
     let Ok(d) = std::fs::read_dir(root.join(SCENARIOS)) else { return out };
     for e in d.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())) {
         let s = e.file_name().to_string_lossy().into_owned();
-        let Ok(files) = std::fs::read_dir(e.path()) else { continue };
-        for f in files.flatten() {
-            let n = f.file_name().to_string_lossy().into_owned();
-            if let Some(name) = n.strip_suffix(".jsonl") {
-                out.push(format!("{s}/{name}"));
-            }
-        }
+        out.extend(crate::scenario::recording_names(root, &s).into_iter().map(|n| format!("{s}/{n}")));
     }
     out.sort();
     out

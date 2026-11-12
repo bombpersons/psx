@@ -27,6 +27,7 @@ mod disc_names;
 mod error;
 mod flow;
 mod ghidra;
+mod git;
 mod guide;
 mod handoff;
 mod inventory;
@@ -275,7 +276,7 @@ enum ScenarioAction {
     /// The determinism check: reach each scenario again with idle fields added before its
     /// chain's last run, record its recordings again from there, and compare.
     Check(scenario::ScenarioCheckArgs),
-    /// Measure the adjustments psx makes to the original (docs/master-plan.md): record each
+    /// Measure the adjustments psx makes to the original (guide topic run): record each
     /// scenario's recordings again from its state, stock and adjusted, driven by the same
     /// ticks, and report each quantity's first tick where they differ.
     AdjustCheck(scenario::ScenarioAdjustCheckArgs),

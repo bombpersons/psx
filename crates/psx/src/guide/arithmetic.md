@@ -3,8 +3,8 @@
 The comparison is exact, so the port computes what the original's
 compiled code computed. psx checks only the numbers, not how they were
 made. The Rust template's vendor/ has psx-fixed (its `Exact` mode) and
-psx-gte, which keep these rules; whatever computes them, `psx port
-vectors` tests it.
+psx-gte, which keep these rules; whatever computes them, port_vectors'
+vectors test it.
 
 A number is a raw word of a stated width (i8, u8, i16, u16, i32, u32) and
 fraction bits F (0 to 31): the real value is raw / 2^F. Arithmetic is on
@@ -79,7 +79,7 @@ rot_y = [c 0 s; 0 1 0; -s 0 c], rot_z = [c -s 0; s c 0; 0 0 1] (1 is
 
 ## Test vectors
 
-`psx port vectors` writes, into `.psx/port/vectors/` (or `--out`):
+port_vectors writes, into `.psx/port/vectors/` (or `out`):
 
 - `fixed.jsonl`: one case a line, a number as `[word, F, raw]`:
   `{"op":"div","a":["i32",12,-8192],"b":["i16",12,0],"out":1}`. `n` is

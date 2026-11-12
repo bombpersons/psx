@@ -83,9 +83,7 @@ impl Dirs {
     }
 }
 
-fn sha256(bytes: &[u8]) -> String {
-    psx_media::disc::sha256_bytes(bytes)
-}
+use crate::stamp::sha256;
 
 fn read(p: &Path) -> crate::Result<Vec<u8>> {
     std::fs::read(p).map_err(|e| Error::io(p, e))

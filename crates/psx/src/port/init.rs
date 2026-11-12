@@ -158,11 +158,7 @@ impl PortInitArgs {
                 Err(e) => json!({"error": e.message}),
             }
         };
-        let git = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dest)
-            .status()
-            .is_ok_and(|s| s.success());
+        let git = crate::git::ok(&dest, &["init", "-q"]);
         let mut next = vec![
             format!("the person starts a session (Claude Code or Codex) in {}", dest.display()),
             "the person states the goal; the agent writes it in goal.toml and records the scenarios that show it"
