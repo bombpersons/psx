@@ -154,7 +154,8 @@ project's code once added. A port of a few rules needs none.
   `Game::headless()`. `psx port check` runs them against the game's
   program, which `src/main.rs` serves with `--psx`, for the verdicts;
   `cargo test -p game --test scenarios` (`game/tests/scenarios.rs`) runs
-  them the same way while working.
+  them the same way while working, all but the held-out plays, which
+  only port check judges.
 - **`--replay`.** `cargo run -p game -- --replay
   scenarios/<id>/<name>.jsonl --frames DIR` draws a recording a PNG per
   tick from `screen`, for psx web to show beside the original. Keep the

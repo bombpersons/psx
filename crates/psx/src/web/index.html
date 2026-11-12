@@ -2267,7 +2267,7 @@ function viewer() {
     : `<div class="quiet" style="color:var(--ok)">The port matched every tick at ${esc(String(ch.commit).slice(0, 10))} (${esc(ch.at)}).</div>`;
   const hasPort = r.quantities.some(q => q.port);
   const heldOut = !!S.recs?.scenarios.find(s => s.id === r.scenario)?.recordings.find(x => x.name === r.name)?.held_out;
-  $("#viewer").innerHTML = `<div class="card"><h2>${esc(r.scenario)} / ${esc(r.name)} <button class="b" id="hold" title="${heldOut ? "the agent works from it from then on" : "port check judges the port on it; the agent never sees it"}">${heldOut ? "Give it to the agent" : "Hold it out"}</button></h2>
+  $("#viewer").innerHTML = `<div class="card"><h2>${esc(r.scenario)} / ${esc(r.name)} <button class="b" id="hold" title="${heldOut ? "the agent works from it from then on" : "port check judges the port on it; the agent never sees it"} (committed with goal.toml)">${heldOut ? "Give it to the agent" : "Hold it out"}</button></h2>
     <div>${esc(r.description || "")}</div><div class="quiet">${esc(r.moment || "")}${r.from ? ` · continues ${esc(r.from)}` : ""} · ${n} ticks${r.captured ? "" : " · an example, not captured"}</div>${checkLine}
     <div class="viewer-top" style="margin-top:8px"><div class="screens">
       <div><div class="slab">original · psx-core <select id="omode" title="the original's own code, or the agent's C (decomp/) in place of the functions whose last code check passed"><option value="">its own code</option><option value="c">with the agent's C</option></select></div><div class="screen"><img id="frame" alt=""><div class="msg" id="fmsg">replaying…</div></div></div>
@@ -2283,6 +2283,7 @@ function viewer() {
   $("#hold").onclick = async () => {
     const x = await post(`/api/p/${S.cur}/held_out`, {scenario: r.scenario, name: r.name, on: !heldOut});
     if (x.error) { alert(x.error.message); return; }
+    if (x.commit_problem) alert(`goal.toml is changed but not committed: git said ${x.commit_problem}`);
     S.recs = null; await recordingsView(true); viewer();
   };
   $("#pmode").value = S.portMode;

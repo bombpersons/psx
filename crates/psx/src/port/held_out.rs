@@ -67,6 +67,20 @@ pub fn set(root: &Path, rec: &str, on: bool) -> crate::Result<Vec<String>> {
     Ok(held_out)
 }
 
+/// Commits the person's recording `rec` (`scenario/name`, its .jsonl and
+/// .coverage.json) and goal.toml alone, so the agent meets them committed
+/// rather than as changes in its way (port check wants a clean tree).
+/// Into `v`: `committed`, the commit, or `commit_problem`, why git
+/// refused; nothing outside a repository or with nothing to commit.
+pub fn commit(root: &Path, rec: &str, message: &str, v: &mut Value) {
+    let (jsonl, coverage) = (format!("{SCENARIOS}/{rec}.jsonl"), format!("{SCENARIOS}/{rec}.coverage.json"));
+    match super::status::Git::commit_alone(root, &[&jsonl, &coverage, GOAL], message) {
+        Ok(Some(c)) => v["committed"] = json!(c),
+        Ok(None) => {}
+        Err(e) => v["commit_problem"] = json!(e),
+    }
+}
+
 /// The scenario's recordings that start inside `name` (their `from`), as
 /// `scenario/name`.
 fn starting_in(root: &Path, scenario: &str, name: &str) -> Vec<String> {
@@ -166,6 +180,43 @@ mod tests {
         )
         .unwrap();
         d
+    }
+
+    #[test]
+    fn the_persons_play_is_committed_alone() {
+        let d = workspace();
+        let root = d.0.as_path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(root).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        // Outside a repository: nothing.
+        let mut v = json!({});
+        commit(root, "walk/play", "play", &mut v);
+        assert_eq!(v, json!({}));
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(root.join("src.rs"), "a").unwrap();
+        git(&["add", "src.rs"]);
+        git(&["commit", "-q", "-m", "start"]);
+        // The agent's work in progress, staged and not, stays as it was.
+        std::fs::write(root.join("src.rs"), "b").unwrap();
+        std::fs::write(root.join("staged.rs"), "c").unwrap();
+        git(&["add", "staged.rs"]);
+        set(root, "walk/play", true).unwrap();
+        commit(root, "walk/play", "Hold out walk/play", &mut v);
+        assert!(v["committed"].is_string(), "{v}");
+        let files = git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(files.lines().collect::<Vec<_>>(), ["goal.toml", "scenarios/walk/play.jsonl"]);
+        let status = git(&["status", "--porcelain"]);
+        assert!(status.contains(" M src.rs") && status.contains("A  staged.rs"), "{status}");
+        assert!(!status.contains("play.jsonl") && !status.contains("goal.toml"), "{status}");
+        // Again with nothing new: no commit.
+        let mut again = json!({});
+        commit(root, "walk/play", "again", &mut again);
+        assert_eq!(again, json!({}));
     }
 
     #[test]

@@ -309,7 +309,12 @@ play`, or declines it with a note. The play starts where `scenario
 record` starts counting fields, after the first tick. When the person
 hands back, psx records their input as `scenario record` does, with its
 coverage, and says whether it ended where the play did; `port next` gives
-a Read item and `--status` returns the answer.
+a Read item and `--status` returns the answer. psx commits the play's
+recording and coverage (and goal.toml, for a held-out one) by
+themselves, as it does when psx web holds a recording out or gives it
+back, so the agent meets the person's files committed, not as changes
+in its way; the commit leaves anything else changed or staged as it was.
+The port's `cargo test` leaves the held-out plays to `port check`.
 
 `psx scenario show ID --name NAME` reads a recording back as a table: one
 row per tick from tick 0 (`initial`), with the field, the pad (and the

@@ -321,7 +321,13 @@ impl<P: Port> Scenarios<P> {
         Scenarios { root: root.into(), port: Box::new(port) }
     }
 
+    /// Every recording, held out or not (psx port check's).
     pub fn report(&self) -> Report {
+        self.report_without(&BTreeSet::new())
+    }
+
+    /// Every recording but those in `skip` (`scenario/name`).
+    fn report_without(&self, skip: &BTreeSet<String>) -> Report {
         let kinds = (self.port)().kinds();
         let mut report = Report { kinds: kinds.clone(), quantities: Vec::new(), scenarios: Vec::new() };
         let dir = self.root.join("scenarios");
@@ -334,13 +340,20 @@ impl<P: Port> Scenarios<P> {
         ids.sort();
         let mut observed = BTreeSet::new();
         for id in ids {
-            report.scenarios.push(self.scenario(&dir, &id, &kinds, &mut observed));
+            report.scenarios.push(self.scenario(&dir, &id, &kinds, &mut observed, skip));
         }
         report.quantities = observed.into_iter().collect();
         report
     }
 
-    fn scenario(&self, dir: &Path, id: &str, kinds: &[String], observed: &mut BTreeSet<String>) -> ScenarioReport {
+    fn scenario(
+        &self,
+        dir: &Path,
+        id: &str,
+        kinds: &[String],
+        observed: &mut BTreeSet<String>,
+        skip: &BTreeSet<String>,
+    ) -> ScenarioReport {
         let mut r = ScenarioReport { id: id.into(), ..Default::default() };
         let s = match read(&dir.join(format!("{id}.toml"))).and_then(|t| Scenario::parse(&t)) {
             Ok(s) => s,
@@ -359,6 +372,7 @@ impl<P: Port> Scenarios<P> {
             .flatten()
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+            .filter(|p| !p.file_stem().and_then(|n| n.to_str()).is_some_and(|n| skip.contains(&format!("{id}/{n}"))))
             .collect();
         files.sort();
         for f in files {
@@ -551,8 +565,11 @@ impl<P: Port> Scenarios<P> {
     }
 
     /// Runs every scenario, prints the results and panics when one fails.
+    /// The plays goal.toml holds out are left to psx port check, which
+    /// judges them: this is the agent's check while working.
     pub fn run(self) {
-        let report = self.report();
+        let held = held_out(&self.root);
+        let report = self.report_without(&held);
         let mut failed = Vec::new();
         for s in &report.scenarios {
             let ticks: usize = s.recordings.iter().map(|r| r.ticks).sum();
@@ -568,8 +585,22 @@ impl<P: Port> Scenarios<P> {
                 failed.extend(r.failures.iter().map(|f| format!("{} {}: {f}", s.id, r.name)));
             }
         }
+        if !held.is_empty() {
+            println!("{} held-out plays not run here (goal.toml held_out): psx port check judges them", held.len());
+        }
         assert!(failed.is_empty(), "scenarios failed:\n{}", failed.join("\n"));
     }
+}
+
+/// goal.toml's `held_out` under `root`, `scenario/name` each: none where
+/// it cannot be read (psx port check says why).
+fn held_out(root: &Path) -> BTreeSet<String> {
+    let Ok(text) = std::fs::read_to_string(root.join("goal.toml")) else { return BTreeSet::new() };
+    let Ok(goal) = text.parse::<toml::Table>() else { return BTreeSet::new() };
+    goal.get("held_out")
+        .and_then(toml::Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
 /// The quantities the port has, by name; a name given twice is an error.
@@ -747,6 +778,23 @@ mod tests {
         let s = &r.scenarios[0];
         assert!(s.passed(), "{s:?}");
         assert_eq!((s.recordings[0].ticks, s.recordings[0].captured), (3, true));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_agents_run_leaves_the_held_out_plays_to_port_check() {
+        // A held-out play that fails: the agent's test passes without it.
+        let root = workspace(SCENARIO, RECORDING);
+        std::fs::write(root.join("scenarios/walk/play.jsonl"), RECORDING.replace("4296", "4300")).unwrap();
+        std::fs::write(root.join("goal.toml"), "description = \"walk\"\nheld_out = [\"walk/play\"]\n").unwrap();
+        assert_eq!(held_out(&root), ["walk/play".to_string()].into());
+        let names = |r: &Report| r.scenarios[0].recordings.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+        let all = Scenarios::new(&root, Walk::new).report();
+        assert_eq!(names(&all), ["a", "play"]);
+        assert!(!all.scenarios[0].passed());
+        let agents = Scenarios::new(&root, Walk::new).report_without(&held_out(&root));
+        assert_eq!(names(&agents), ["a"]);
+        Scenarios::new(&root, Walk::new).run();
         let _ = std::fs::remove_dir_all(root);
     }
 

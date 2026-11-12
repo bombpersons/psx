@@ -596,8 +596,12 @@ fn act(req: &Request, st: &State) -> crate::Result<Value> {
         if !recording_ok(s, n) {
             return Err(crate::Error::invalid(format!("{s}/{n}: not a recording")));
         }
-        let held_out = crate::port::held_out::set(&p.root, &format!("{s}/{n}"), req.body["on"] == true)?;
-        return Ok(json!({"status": "ok", "held_out": held_out}));
+        let (rec, on) = (format!("{s}/{n}"), req.body["on"] == true);
+        let held_out = crate::port::held_out::set(&p.root, &rec, on)?;
+        let mut v = json!({"status": "ok", "held_out": held_out});
+        let message = if on { format!("Hold out {rec}") } else { format!("Give {rec} to the work") };
+        crate::port::held_out::commit(&p.root, &rec, &message, &mut v);
+        return Ok(v);
     }
     let (head, what) = req.path.rsplit_once('/').unwrap_or(("", ""));
     let (root, dir) = request_dir(head, st)?;

@@ -896,6 +896,9 @@ fn record_play(
         v["catalogue"] = json!(format!("{rec} is held out (goal.toml's held_out): judged, not worked on"));
     }
     if ok {
+        let rec = format!("{}/{}", p.id, p.name);
+        let held = if a.held_out { ", held out" } else { "" };
+        crate::port::held_out::commit(&ctx.root, &rec, &format!("The person's play {rec}{held}"), &mut v);
         let matches = b.m.save_state(b.media_id.clone()) == end_state;
         v["matches_play"] = json!(matches);
         if !matches {
