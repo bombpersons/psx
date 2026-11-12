@@ -200,7 +200,7 @@ fn expect_report(a: &HandoffArgs, m: &Machine, end: End) -> Value {
         Ok(c) => c,
         Err(e) => return e.to_value(),
     };
-    let mut v = crate::until::check(&conds, &m.bus.ram, &m.bus.scratch);
+    let mut v = crate::until::check(&conds, m);
     let met = v["met"] == true;
     v["verdict"] = json!(match (end, met) {
         (End::Done, true) => "The end state is what was asked for: continue from state.bin.",

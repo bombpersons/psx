@@ -494,6 +494,142 @@ pub struct Sample {
     pub mem: Mem,
     /// A names path (`car_0->speed`), when given as one.
     pub path: Option<std::sync::Arc<crate::names_bind::NamePath>>,
+    /// A register, or memory through a register or a pointer (`v0`,
+    /// `sp+24`, `0x8007515C->0x54`), when given as one.
+    pub expr: Option<std::sync::Arc<Expr>>,
+}
+
+/// A CPU register a column reads: a general register, or pc, hi, lo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reg {
+    Gpr(u8),
+    Pc,
+    Hi,
+    Lo,
+}
+
+impl Reg {
+    /// `v0`, `$a0`, `r29`, `pc`, `hi`, `lo`.
+    pub fn parse(s: &str) -> Option<Reg> {
+        let n = s.trim().strip_prefix('$').unwrap_or(s.trim()).to_ascii_lowercase();
+        match n.as_str() {
+            "pc" => Some(Reg::Pc),
+            "hi" => Some(Reg::Hi),
+            "lo" => Some(Reg::Lo),
+            "s8" => Some(Reg::Gpr(30)),
+            n => (0..32u32)
+                .find(|&i| psx_core::disasm::reg(i) == n || format!("r{i}") == n)
+                .map(|i| Reg::Gpr(i as u8)),
+        }
+    }
+
+    pub fn read(self, m: &psx_core::Machine) -> u32 {
+        match self {
+            Reg::Gpr(i) => m.cpu.regs[i as usize],
+            Reg::Pc => m.cpu.pc,
+            Reg::Hi => m.cpu.hi,
+            Reg::Lo => m.cpu.lo,
+        }
+    }
+}
+
+/// What an expression reads: a register's value, or memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Reg(u32),
+    Mem(u32),
+}
+
+/// `REG`, `REG+OFF` or `OFF(REG)` (memory at the register plus OFF), or a
+/// base then `->OFF` steps, each reading the word where it is and adding
+/// OFF: `0x8007515C->0x54`, `croc->0xB4` (a global's pointer), `sp->24`
+/// (a register is its own pointer, so `sp->24` is `sp+24`).
+#[derive(Clone, Debug)]
+pub struct Expr {
+    pub text: String,
+    base: ExprBase,
+    steps: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ExprBase {
+    /// A register's value, plus OFF where it is read as an address.
+    Reg(Reg, Option<u32>),
+    Addr(u32),
+}
+
+fn offset(s: &str) -> Option<u32> {
+    number(s).filter(|n| (-(1 << 31)..1 << 32).contains(n)).map(|n| n as u32)
+}
+
+impl Expr {
+    /// `s` as an expression: None where it is none (a plain address, a
+    /// name, a names path with fields).
+    pub fn parse(s: &str) -> Option<Result<Expr, String>> {
+        let text = s.trim();
+        let mut parts = text.split("->");
+        let head = parts.next().unwrap_or("").trim();
+        let rest: Vec<&str> = parts.map(str::trim).collect();
+        let steps: Option<Vec<u32>> = rest.iter().map(|p| offset(p)).collect();
+        // A field's name is a names path's step, not ours.
+        let steps = steps?;
+        let reg_off = |h: &str| -> Option<(Reg, Option<u32>)> {
+            if let Some(r) = Reg::parse(h) {
+                return Some((r, None));
+            }
+            // OFF(REG), as the disassembly writes it.
+            if let Some(inner) = h.strip_suffix(')') {
+                let (off, r) = inner.split_once('(')?;
+                return Some((Reg::parse(r)?, Some(offset(off)?)));
+            }
+            let at = h.rfind(['+', '-'])?;
+            let off = offset(&h[at..].replacen('+', "", 1))?;
+            Some((Reg::parse(&h[..at])?, Some(off)))
+        };
+        let base = match reg_off(head) {
+            Some((r, off)) => ExprBase::Reg(r, off),
+            None if rest.is_empty() => return None,
+            None => match crate::names_bind::address(head) {
+                Ok(a) => ExprBase::Addr(a),
+                Err(e) => return Some(Err(e)),
+            },
+        };
+        Some(Ok(Expr { text: text.to_string(), base, steps }))
+    }
+
+    /// Whether it reads a register's own value rather than memory.
+    pub fn is_register(&self) -> bool {
+        matches!(self.base, ExprBase::Reg(_, None)) && self.steps.is_empty()
+    }
+
+    /// Where it reads now: none where a pointer on the way leads outside
+    /// memory.
+    pub fn place(&self, m: &psx_core::Machine) -> Option<Place> {
+        self.place_in(&m.bus.ram, &m.bus.scratch, Some(&|r: Reg| r.read(m)))
+    }
+
+    /// As place, in memory alone: none for a register without `reg`.
+    pub fn place_in(&self, ram: &[u8], scratch: &[u8], reg: Option<&dyn Fn(Reg) -> u32>) -> Option<Place> {
+        let mut steps = self.steps.iter();
+        let mut addr = match self.base {
+            ExprBase::Reg(r, None) => match steps.next() {
+                // The register is the pointer the first step reads.
+                Some(&off) => reg?(r).wrapping_add(off),
+                None => return Some(Place::Reg(reg?(r))),
+            },
+            ExprBase::Reg(r, Some(off)) => reg?(r).wrapping_add(off),
+            ExprBase::Addr(a) => a,
+        };
+        for &off in steps {
+            addr = word_at(ram, scratch, addr)?.wrapping_add(off);
+        }
+        Some(Place::Mem(addr))
+    }
+
+    /// Whether it reads a register on the way.
+    pub fn uses_register(&self) -> bool {
+        matches!(self.base, ExprBase::Reg(..))
+    }
 }
 
 /// The word at `addr` in main RAM or the scratchpad.
@@ -513,18 +649,38 @@ impl Sample {
         }
     }
 
-    /// The value now (a bit field's bits alone).
+    /// The value now (a bit field's bits alone). None for an expression,
+    /// which reads the CPU too: read_in.
     pub fn read(&self, ram: &[u8], scratch: &[u8]) -> Option<Val> {
+        if self.expr.is_some() {
+            return None;
+        }
         let (_, m) = self.at(ram, scratch)?;
-        Some(match self.fmt {
-            Fmt::Str(n) => Val::Bytes(mem_bytes(ram, scratch, m, n as usize).to_vec()),
-            f => Val::Num(f.take(read_mem(ram, scratch, m, f.width()))),
-        })
+        Some(self.read_mem(ram, scratch, m))
     }
 
-    /// As JSON: null where the value is absent.
-    pub fn json(&self, ram: &[u8], scratch: &[u8]) -> Value {
-        self.read(ram, scratch).map_or(Value::Null, |v| self.fmt.value(&v))
+    fn read_mem(&self, ram: &[u8], scratch: &[u8], m: Mem) -> Val {
+        match self.fmt {
+            Fmt::Str(n) => Val::Bytes(mem_bytes(ram, scratch, m, n as usize).to_vec()),
+            f => Val::Num(f.take(read_mem(ram, scratch, m, f.width()))),
+        }
+    }
+
+    /// The value now in `m`, registers included.
+    pub fn read_in(&self, m: &psx_core::Machine) -> Option<Val> {
+        let (ram, scratch) = (&m.bus.ram[..], &m.bus.scratch[..]);
+        match &self.expr {
+            Some(e) => match e.place(m)? {
+                Place::Reg(v) => Some(Val::Num(self.fmt.take(v))),
+                Place::Mem(a) => Some(self.read_mem(ram, scratch, locate(a, self.fmt.width())?)),
+            },
+            None => self.read(ram, scratch),
+        }
+    }
+
+    /// As JSON in `m`, registers included.
+    pub fn json_in(&self, m: &psx_core::Machine) -> Value {
+        self.read_in(m).map_or(Value::Null, |v| self.fmt.value(&v))
     }
 }
 
@@ -539,6 +695,17 @@ pub fn parse_sample(s: &str) -> Result<Sample, String> {
 /// for a names path to its type's.
 pub fn sample(a: &str, f: Option<&str>, name: Option<&str>, label: &str) -> Result<Sample, String> {
     let f = f.filter(|f| !f.trim().is_empty());
+    if let Some(e) = Expr::parse(a) {
+        let e = e.map_err(|e| format!("{label}: {e}"))?;
+        // A register's value reads as hex unless a format says otherwise.
+        let fmt = fmt_named(f.unwrap_or(if e.is_register() { "x32" } else { "u32" }), label)?;
+        let name = name.filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| e.text.clone());
+        if name.contains([',', '"', '\n']) {
+            return Err(format!("{label}: names cannot contain commas or quotes"));
+        }
+        let expr = Some(std::sync::Arc::new(e));
+        return Ok(Sample { addr: 0, fmt, name, mem: Mem::Ram(0), path: None, expr });
+    }
     let Some(path) = crate::names_bind::NamePath::parse(a) else {
         let addr = crate::names_bind::address(a).map_err(|e| format!("{label}: {e}"))?;
         return sample_at(addr, f.unwrap_or("u32"), name, label);
@@ -563,7 +730,7 @@ pub fn sample(a: &str, f: Option<&str>, name: Option<&str>, label: &str) -> Resu
     if name.contains([',', '"', '\n']) {
         return Err(format!("{label}: names cannot contain commas or quotes"));
     }
-    Ok(Sample { addr, fmt, name, mem, path: Some(std::sync::Arc::new(path)) })
+    Ok(Sample { addr, fmt, name, mem, path: Some(std::sync::Arc::new(path)), expr: None })
 }
 
 /// The format a names type reads as by default: its number, a pointer or
@@ -611,7 +778,7 @@ pub fn sample_at(addr: u32, f: &str, name: Option<&str>, label: &str) -> Result<
     if name.contains([',', '"', '\n']) {
         return Err(format!("{label}: names cannot contain commas or quotes"));
     }
-    Ok(Sample { addr, fmt, name, mem, path: None })
+    Ok(Sample { addr, fmt, name, mem, path: None, expr: None })
 }
 
 /// A `sample` column as given: `ADDR:FMT[:NAME]` text, or over MCP/JSON a
@@ -731,7 +898,8 @@ pub fn with_glossary(
 impl SampleSpec {
     pub fn parse(&self) -> Result<Column, String> {
         match self {
-            SampleSpec::Text(s) if is_quantity(s) => Ok(Column::Quantity(s.clone())),
+            // A register (v0) is spelled as a quantity could be.
+            SampleSpec::Text(s) if is_quantity(s) && Reg::parse(s).is_none() => Ok(Column::Quantity(s.clone())),
             _ => self.memory().map(Column::Memory),
         }
     }
@@ -808,6 +976,8 @@ pub struct Sampler {
     pub rows: u64,
     /// Ticks ended since the run started.
     pub ticks: u64,
+    /// A row each time this is about to run, instead of per field or tick.
+    pub at_pc: Option<u32>,
     last: Option<u64>,
 }
 
@@ -819,7 +989,23 @@ impl Sampler {
             out.push_str(c.name());
         }
         out.push('\n');
-        Sampler { columns, every: every.max(1), per, quantities, out, rows: 0, ticks: 0, last: None }
+        Sampler { columns, every: every.max(1), per, quantities, out, rows: 0, ticks: 0, at_pc: None, last: None }
+    }
+
+    /// Rows each time `pc` is about to run, `ticks` ticks ended before the
+    /// first: `run_frame,frame,tick,<columns...>`, tick the one it runs in.
+    pub fn at_pc(columns: Vec<Column>, pc: u32, ticks: u64, quantities: Option<Quantities>) -> Self {
+        let mut s = Sampler::new(columns, 1, SamplePer::Tick, quantities);
+        s.at_pc = Some(pc);
+        s.ticks = ticks;
+        s
+    }
+
+    /// `pc` is about to run: a row if rows are per pc.
+    pub fn hit(&mut self, run_frame: u64, m: &psx_core::Machine) {
+        if self.at_pc == Some(m.cpu.pc) {
+            self.row(format!("{run_frame},{},{}", m.bus.frames, self.ticks + 1), m);
+        }
     }
 
     /// At a vblank: a row for `run_frame` if rows are per field and it is
@@ -839,7 +1025,7 @@ impl Sampler {
     /// (every Nth tick).
     pub fn tick(&mut self, run_frame: u64, m: &psx_core::Machine) {
         self.ticks += 1;
-        if self.per == SamplePer::Tick && self.ticks.is_multiple_of(self.every) {
+        if self.per == SamplePer::Tick && self.at_pc.is_none() && self.ticks.is_multiple_of(self.every) {
             self.row(format!("{run_frame},{},{}", m.bus.frames, self.ticks), m);
         }
     }
@@ -852,7 +1038,7 @@ impl Sampler {
             line.push(',');
             match c {
                 Column::Memory(c) => {
-                    if let Some(v) = c.read(&m.bus.ram, &m.bus.scratch) {
+                    if let Some(v) = c.read_in(m) {
                         line += &c.fmt.cell(&v);
                     }
                 }
@@ -950,7 +1136,7 @@ pub fn parse_poke(s: &str) -> Result<Poke, String> {
     };
     let mem =
         locate(addr, fmt.width()).ok_or_else(|| format!("poke {s:?}: 0x{addr:08X} is not main RAM or scratchpad"))?;
-    let at = Sample { addr, fmt, name: a.trim().to_string(), mem, path: None };
+    let at = Sample { addr, fmt, name: a.trim().to_string(), mem, path: None, expr: None };
     let value = at.fmt.given(val).ok_or_else(|| match at.fmt {
         Fmt::Str(n) => format!(
             "poke {s:?}: bad value {val:?} (a byte string of at most {n} bytes: printable ASCII, \\xNN for any byte)"
@@ -1399,6 +1585,35 @@ mod tests {
         assert_eq!((p.width(), p.value), (4, Val::Num(0x012C_8000)));
         let p = parse_poke("8015E8AC=-2:2").unwrap();
         assert_eq!((p.width(), p.value), (2, Val::Num(0xFFFE)));
+    }
+
+    #[test]
+    fn registers_and_pointers_read_through_the_cpu() {
+        let mut m = psx_core::Machine::new(vec![0; 0x8_0000]);
+        m.cpu.regs[2] = 0xFFFF_FFFE;
+        m.cpu.regs[29] = 0x1F80_0100;
+        m.bus.scratch[0x118..0x11C].copy_from_slice(&0x8001_0000u32.to_le_bytes());
+        m.bus.ram[0x10000..0x10004].copy_from_slice(&0x8002_0000u32.to_le_bytes());
+        m.bus.ram[0x20054..0x20056].copy_from_slice(&(-7i16).to_le_bytes());
+        let read = |m: &psx_core::Machine, s: &str| {
+            let c = parse_sample(s).unwrap();
+            let v = c.read_in(m).map(|v| c.fmt.cell(&v));
+            (c.name, v)
+        };
+        assert_eq!(read(&m, "v0"), ("v0".into(), Some("0xFFFFFFFE".into())), "a register reads as hex");
+        assert_eq!(read(&m, "$v0:i32:speed").1.as_deref(), Some("-2"));
+        assert_eq!(read(&m, "sp+0x18:x32").1.as_deref(), Some("0x80010000"));
+        assert_eq!(read(&m, "24(sp):x32").1.as_deref(), Some("0x80010000"));
+        assert_eq!(read(&m, "sp->0x18:x32").1.as_deref(), Some("0x80010000"), "a register is its own pointer");
+        assert_eq!(read(&m, "sp+0x18->0->0x54:i16").1.as_deref(), Some("-7"));
+        assert_eq!(read(&m, "0x80010000->0x54:i16").1.as_deref(), Some("-7"));
+        // A pointer that leads outside memory reads nothing.
+        m.bus.ram[0x30000..0x30004].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        assert_eq!(read(&m, "0x80030000->0:u8").1, None);
+        // An address reads memory, as before; registers need the CPU.
+        assert_eq!(parse_sample("0x80010000:x32").unwrap().read_in(&m), Some(Val::Num(0x8002_0000)));
+        assert_eq!(parse_sample("v0").unwrap().read(&m.bus.ram, &m.bus.scratch), None);
+        assert!(matches!(SampleSpec::Text("v0".into()).parse(), Ok(Column::Memory(_))), "a register, not a quantity");
     }
 
     #[test]

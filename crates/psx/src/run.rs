@@ -461,6 +461,17 @@ pub(crate) fn range_at(s: &str, mem: Option<(&[u8], &[u8])>) -> Result<(u32, u32
     let (a, w) = crate::commands::split_width(s);
     let w = w.map(|w| w.parse::<u32>().ok().filter(|&n| n > 0).ok_or_else(|| format!("bad width in {s:?}")));
     let w = w.transpose()?;
+    if let Some(e) = crate::ram::Expr::parse(a) {
+        let e = e?;
+        if e.uses_register() {
+            return Err(format!("{a:?} reads a register, which is read at a stop or in a sample, not here"));
+        }
+        let (ram, scratch) = mem.ok_or_else(|| format!("{a:?} reads a pointer, which is not read here"))?;
+        return match e.place_in(ram, scratch, None) {
+            Some(crate::ram::Place::Mem(at)) => Ok((at, w.unwrap_or(4))),
+            _ => Err(format!("{a:?}: a pointer on the way leads outside memory now")),
+        };
+    }
     match crate::names_bind::NamePath::parse(a) {
         Some(Ok(p)) => {
             let at = match (p.fixed(), mem) {

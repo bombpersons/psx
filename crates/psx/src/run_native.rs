@@ -309,7 +309,7 @@ pub fn run(root: &Path, mut a: RunArgs, events: Vec<crate::replay::Input>) -> cr
         s.observe(observe::PadFlow { flow: crate::pad_reads::PadReads::new(), scopes: scopes.clone() });
     }
     if let Some(o) = sampler {
-        s.observe(observe::Samples(o));
+        s.observe(observe::Samples(o, 0));
     }
     if let Some(o) = profile {
         s.observe(o);
@@ -453,6 +453,13 @@ pub(crate) fn registers(m: &Machine) -> serde_json::Map<String, Value> {
     registers.insert("cop0_sr".into(), json!(hex(m.cpu.cop0[12])));
     registers.insert("cop0_cause".into(), json!(hex(m.cpu.cop0[13])));
     registers.insert("cop0_epc".into(), json!(hex(m.cpu.cop0[14])));
+    if let Some((r, v)) = m.cpu.load_in_flight() {
+        registers.insert(
+            "load_in_flight".into(),
+            json!({"register": reg(r as u32), "value": hex(v),
+                "note": format!("a load into {} is in flight: the instruction at pc still reads the old value above, and {} holds this one after it", reg(r as u32), reg(r as u32))}),
+        );
+    }
     registers
 }
 
@@ -537,18 +544,26 @@ fn attach_observers(m: &mut Machine, a: &RunArgs) -> crate::Result<()> {
 
 /// The core's write watches on `ADDR[:WIDTH]` (4 bytes by default), keeping
 /// at most `max` hits.
-pub(crate) fn watch(m: &mut Machine, specs: &[String], max: usize) -> crate::Result<()> {
+/// Watches `specs`, and says where each one landed.
+pub(crate) fn watch(m: &mut Machine, specs: &[String], max: usize) -> crate::Result<Vec<Value>> {
+    let mut landed = Vec::new();
     for w in specs {
         // Any byte length: the native watch covers [ADDR, ADDR+WIDTH); a
         // names path through a pointer is where it leads now.
         let (addr, width) = crate::run::range_at(w, Some((&m.bus.ram, &m.bus.scratch)))
             .map_err(|e| Error::invalid(format!("watch: {e}")))?;
         m.bus.obs.watch(addr, width);
+        let mut v = json!({"watch": w, "address": hex(addr), "width": width});
+        let (spec, _) = crate::commands::split_width(w);
+        if matches!(crate::names_bind::NamePath::parse(spec), Some(Ok(p)) if p.derefs) || spec.contains("->") {
+            v["note"] = json!("through a pointer: where it led when the go started (the pointer is not followed later)");
+        }
+        landed.push(v);
     }
     // Observer::watch has a diagnostic default; investigation runs honor the
     // caller's recording budget, including zero, just as read watches do.
     m.bus.obs.max_hits = max;
-    Ok(())
+    Ok(landed)
 }
 
 fn annotate_hit(h: &psx_core::observe::WriteHit) -> Value {

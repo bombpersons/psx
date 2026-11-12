@@ -831,8 +831,8 @@ mod tests {
         // 2026-10-29 with mechanic_check and mechanic_capture; 69K with port_check;
         // 71.6K with scenario_record and scenario_check (the guide pass trims later);
         // mechanic_check and mechanic_capture went on 2026-10-30; 71.7K from 2026-11-11 with
-        // scenario_play's held_out.
-        assert!(size <= 71_700, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
+        // scenario_play's held_out; 72K from 2026-11-12 with debug_go's when and sample_pc.
+        assert!(size <= 72_000, "tool definitions grew to {size} bytes; was 75K before 2026-10-17");
         for t in &tools {
             assert!(
                 t.description.len() <= 400,

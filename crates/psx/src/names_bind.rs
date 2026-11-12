@@ -408,8 +408,12 @@ pub(crate) fn project_names() -> Arc<Names> {
 /// `[MODULE:]name[+OFFSET]` (a function's or a global's). Hex wins unless
 /// a name is spelled the same and no `0x` is given.
 pub(crate) fn address(spec: &str) -> Result<u32, String> {
+    address_in(project_names(), spec)
+}
+
+fn address_in(names: Arc<Names>, spec: &str) -> Result<u32, String> {
     let spec = spec.trim();
-    match NamePath::parse(spec) {
+    match NamePath::parse_in(names.clone(), spec) {
         Some(Ok(p)) => {
             return p.fixed().ok_or_else(|| {
                 format!("{spec:?} reads a pointer: give it where memory is read (sample, until, watch, debug)")
@@ -419,7 +423,6 @@ pub(crate) fn address(spec: &str) -> Result<u32, String> {
         None => {}
     }
     let hex = psx_media::memmap::parse_hex(spec);
-    let names = project_names();
     if let Some(h) = hex {
         if spec.starts_with("0x") || spec.starts_with("0X") || find(&names, spec).is_empty() {
             return Ok(h);
@@ -436,6 +439,19 @@ pub(crate) fn address(spec: &str) -> Result<u32, String> {
     if let Some(h) = psx_media::memmap::parse_hex(base) {
         if base.starts_with("0x") || base.starts_with("0X") || found.is_empty() {
             return Ok(h.wrapping_add(off));
+        }
+    }
+    // A pointer's name plus an offset reads beside the pointer, which is
+    // seldom what is meant by it.
+    if off != 0 && found.len() == 1 {
+        if let Some(Ok(p)) = NamePath::parse_in(names.clone(), base) {
+            if matches!(p.plain_leaf(), psx_symbols::names::Type::Pointer { .. }) {
+                return Err(format!(
+                    "{base} is a pointer ({}), so {base}+{off} would be memory beside the pointer itself, not in what it points at: for that give {base}->FIELD or {base}->0x{off:X}; for the memory beside it give 0x{:08X}",
+                    type_text(&p.leaf),
+                    found[0].wrapping_add(off)
+                ));
+            }
         }
     }
     match found.as_slice() {
@@ -908,5 +924,10 @@ mod tests {
         assert!(path("car->wheels").unwrap().unwrap_err().contains("not a pointer"));
         assert!(path("nope.x").unwrap().unwrap_err().contains("nope is neither a hex address nor a global"));
         assert!(path("STEP.x").unwrap().unwrap_err().contains("no type"));
+        // A pointer plus an offset is refused: it reads beside the pointer.
+        let e = address_in(n.clone(), "car_ptr+180").unwrap_err();
+        assert!(e.contains("car_ptr->0xB4") && e.contains("0x800701B4"), "{e}");
+        assert_eq!(address_in(n.clone(), "car+4"), Ok(0x8007_0004));
+        assert_eq!(address_in(n.clone(), "car_ptr"), Ok(0x8007_0100));
     }
 }

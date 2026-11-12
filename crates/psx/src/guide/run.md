@@ -106,7 +106,11 @@ zeros left off; until takes = and != only) or a width 1/2/4.
 
 ADDR is hex, a name from names/ (`name+0x10`), or a names path: a global
 with a type, then `.field`, `->field` (through a pointer) and `[N]`
-(`car_0->wheels[2].load`). A path's FMT defaults to its type's (an
+(`car_0->wheels[2].load`). A pointer's name plus an offset is refused,
+as it would be memory beside the pointer: `->0xB4` steps through a
+pointer by offset, after a name (`croc->0xB4`) or hex
+(`0x8007515C->0x54`), each step reading the word there and adding.
+A path's FMT defaults to its type's (an
 integer as itself, a pointer or float as x32, a char array as strN; a
 struct needs one), its column name to the path. sample, until and
 debug_show value read a path through a pointer anew each time (an empty
@@ -115,6 +119,12 @@ leads outside memory);
 watch, watch_reads, debug_go's write and read and debug_show bytes take
 where it leads when they start, its type's size by default; a poke
 takes a path without pointers.
+
+sample, until, debug_show value and debug_go when also read the CPU: a
+register by name (`v0`, `$a3`, `ra`, `pc`, `hi`, `lo`; x32 by default;
+`a0` to `a3` are registers, `0xA0` the address), or memory through one
+(`sp+24`, `24(sp)`, `a1->8`, `a1->0->0x10`). In a run's samples they are
+the CPU's at the vblank; at a stop or a sample_pc row, where the code is.
 
 ## Observations
 

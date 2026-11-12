@@ -87,7 +87,7 @@ pub(super) struct Until {
 
 impl Observer for Until {
     fn field(&mut self, rel: u64, m: &mut Machine) -> crate::Result<Flow> {
-        if self.conds.iter().all(|u| u.holds(&m.bus.ram, &m.bus.scratch)) {
+        if self.conds.iter().all(|u| u.holds(m)) {
             self.met = Some((rel, m.bus.frames));
             return Ok(Flow::Stop("until_met"));
         }
@@ -95,7 +95,7 @@ impl Observer for Until {
     }
 
     fn finish(self: Box<Self>, m: &Machine, out: &mut Out) -> crate::Result<()> {
-        out.section("until", crate::until::report(&self.conds, self.met, &m.bus.ram, &m.bus.scratch));
+        out.section("until", crate::until::report(&self.conds, self.met, m));
         Ok(())
     }
 }
@@ -232,12 +232,22 @@ impl Observer for PadFlow {
 }
 
 /// `sample`: samples.csv, a row per field or per tick.
-pub(crate) struct Samples(pub crate::ram::Sampler);
+pub(crate) struct Samples(pub crate::ram::Sampler, pub u64);
 
 impl Observer for Samples {
+    fn per_step(&self) -> bool {
+        self.0.at_pc.is_some()
+    }
+
     fn field(&mut self, rel: u64, m: &mut Machine) -> crate::Result<Flow> {
+        self.1 = rel;
         self.0.field(rel, m, false);
         Ok(Flow::Go)
+    }
+
+    fn step(&mut self, _info: &psx_core::cpu::StepInfo, m: &mut Machine) -> Flow {
+        self.0.hit(self.1, m);
+        Flow::Go
     }
 
     fn tick(&mut self, rel: u64, m: &mut Machine) -> Flow {
@@ -255,11 +265,13 @@ impl Observer for Samples {
     fn finish(self: Box<Self>, _m: &Machine, out: &mut Out) -> crate::Result<()> {
         let s = &self.0;
         out.put("samples.csv", s.out.as_bytes());
-        let tick = s.per == crate::ram::SamplePer::Tick;
+        let tick = s.per == crate::ram::SamplePer::Tick && s.at_pc.is_none();
         let mut r = json!({
             "file": out.dir.join("samples.csv"), "rows": s.rows, "every": s.every,
-            "per": if tick { "tick" } else { "field" },
+            "per": if s.at_pc.is_some() { "pc" } else if tick { "tick" } else { "field" },
             "columns": s.columns.iter().map(|c| match c {
+                crate::ram::Column::Memory(c) if c.expr.as_ref().is_some_and(|e| e.is_register()) => json!({"name": c.name, "register": c.expr.as_ref().map(|e| &e.text), "format": c.fmt.name()}),
+                crate::ram::Column::Memory(c) if c.expr.is_some() => json!({"name": c.name, "expression": c.expr.as_ref().map(|e| &e.text), "format": c.fmt.name(), "note": "read through its register or pointers each row: an empty cell where it leads outside memory"}),
                 crate::ram::Column::Memory(c) => match &c.path {
                     Some(p) if p.derefs => json!({"name": c.name, "path": p.text, "format": c.fmt.name(), "note": "read through a pointer each row: an empty cell where one is null or leads outside memory"}),
                     p => {
@@ -270,10 +282,12 @@ impl Observer for Samples {
                 },
                 crate::ram::Column::Quantity(n) => json!({"name": n, "source": "glossary"}),
             }).collect::<Vec<_>>(),
-            "timing": if tick {
-                "a row at the end of every tick of the game's logic (the glossary binding's tick store), as that store left memory; tick counts the ticks ended since the run start"
+            "timing": if let Some(pc) = s.at_pc {
+                json!(format!("a row each time 0x{pc:08X} was about to run, with the registers and memory then; tick is the tick it ran in"))
+            } else if tick {
+                json!("a row at the end of every tick of the game's logic (the glossary binding's tick store), as that store left memory; tick counts the ticks ended since the run start")
             } else {
-                "row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input"
+                json!("row N = memory at the Nth vblank of the run (row 0 = the starting memory), before that frame's replay input")
             },
         });
         if tick {

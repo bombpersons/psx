@@ -290,6 +290,12 @@ impl Cpu {
         self.load = (0, 0);
     }
 
+    /// The load in flight `(register, value)`, if any: the next instruction
+    /// still reads the register's old value, and the load lands after.
+    pub fn load_in_flight(&self) -> Option<(usize, u32)> {
+        Some(self.load).filter(|&(r, _)| r != 0)
+    }
+
     fn cause_ip(&self) -> u32 {
         (self.cop0[cop0::CAUSE] & !0x400) | if self.irq_line { 0x400 } else { 0 }
     }

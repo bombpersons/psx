@@ -75,8 +75,8 @@ pub fn parse(s: &str) -> Result<Until, String> {
 
 impl Until {
     /// Never while a pointer leads outside memory.
-    pub fn holds(&self, ram: &[u8], scratch: &[u8]) -> bool {
-        self.col.read(ram, scratch).is_some_and(|v| match (&v, &self.want) {
+    pub fn holds(&self, m: &psx_core::Machine) -> bool {
+        self.col.read_in(m).is_some_and(|v| match (&v, &self.want) {
             (&Val::Num(v), &Val::Num(w)) => self.op.test(ordered(self.col.fmt, v), ordered(self.col.fmt, w)),
             // A byte string: = or != only (parse refuses the others).
             (v, w) => (v == w) == (self.op == Op::Eq),
@@ -85,18 +85,18 @@ impl Until {
 }
 
 /// Whether each condition holds now, with its value (names only).
-pub fn check(conds: &[Until], ram: &[u8], scratch: &[u8]) -> Value {
+pub fn check(conds: &[Until], m: &psx_core::Machine) -> Value {
     let each: Vec<Value> = conds
         .iter()
-        .map(|c| json!({"condition": c.text, "holds": c.holds(ram, scratch), "value": c.col.json(ram, scratch)}))
+        .map(|c| json!({"condition": c.text, "holds": c.holds(m), "value": c.col.json_in(m)}))
         .collect();
     json!({"met": each.iter().all(|c| c["holds"] == true), "conditions": each})
 }
 
 /// The report section: whether every condition held, where, and the values
 /// at the run's end (names only).
-pub fn report(conds: &[Until], met: Option<(u64, u64)>, ram: &[u8], scratch: &[u8]) -> Value {
-    let values: serde_json::Map<_, _> = conds.iter().map(|c| (c.col.name.clone(), c.col.json(ram, scratch))).collect();
+pub fn report(conds: &[Until], met: Option<(u64, u64)>, m: &psx_core::Machine) -> Value {
+    let values: serde_json::Map<_, _> = conds.iter().map(|c| (c.col.name.clone(), c.col.json_in(m))).collect();
     let mut v = json!({
         "conditions": conds.iter().map(|c| &c.text).collect::<Vec<_>>(),
         "met": met.is_some(),
@@ -128,25 +128,28 @@ mod tests {
 
     #[test]
     fn conditions_compare_in_the_columns_format() {
-        let mut ram = vec![0u8; crate::ram::RAM_SIZE];
-        let scratch = vec![0u8; crate::ram::SCRATCH_SIZE];
-        ram[0x10000] = 3;
-        ram[0x10004..0x10006].copy_from_slice(&(-5i16).to_le_bytes());
-        ram[0x10008..0x1000C].copy_from_slice(&(3i32 << 15).to_le_bytes());
-        let holds = |s: &str| parse(s).unwrap().holds(&ram, &scratch);
-        assert!(holds("80010000:u8=3") && holds("80010000:u8 = 0x3") && !holds("80010000:u8!=3"));
-        assert!(holds("80010004:i16<0") && holds("80010004:i16<=-5") && !holds("80010004:i16>-5"));
-        assert!(holds("80010008:fx16.16=1.5") && holds("80010008:fx16.16>1"));
-        assert!(holds("80010004:u16=0xFFFB"));
+        let mut m = psx_core::Machine::new(vec![0; 0x8_0000]);
+        m.bus.ram[0x10000] = 3;
+        m.bus.ram[0x10004..0x10006].copy_from_slice(&(-5i16).to_le_bytes());
+        m.bus.ram[0x10008..0x1000C].copy_from_slice(&(3i32 << 15).to_le_bytes());
+        let holds = |m: &psx_core::Machine, s: &str| parse(s).unwrap().holds(m);
+        assert!(holds(&m, "80010000:u8=3") && holds(&m, "80010000:u8 = 0x3") && !holds(&m, "80010000:u8!=3"));
+        assert!(holds(&m, "80010004:i16<0") && holds(&m, "80010004:i16<=-5") && !holds(&m, "80010004:i16>-5"));
+        assert!(holds(&m, "80010008:fx16.16=1.5") && holds(&m, "80010008:fx16.16>1"));
+        assert!(holds(&m, "80010004:u16=0xFFFB"));
         let conds = vec![parse("80010000:u8=3").unwrap(), parse("80010004:i16>0").unwrap()];
-        let v = super::check(&conds, &ram, &scratch);
+        let v = super::check(&conds, &m);
         assert_eq!((v["met"].clone(), v["conditions"][1]["value"].clone()), (false.into(), (-5).into()));
         let err = |s: &str| parse(s).unwrap_err();
         assert!(err("80010000:u8=1.5").contains("not a u8"));
         assert!(err("nothing=1").contains("nothing"));
-        ram[0x10020..0x10025].copy_from_slice(b"a=b\0\x01");
-        let holds = |s: &str| parse(s).unwrap().holds(&ram, &scratch);
-        assert!(holds(r"80010020:str8=a=b\x00\x01") && !holds("80010020:str8=a=b"));
+        m.bus.ram[0x10020..0x10025].copy_from_slice(b"a=b\0\x01");
+        assert!(holds(&m, r"80010020:str8=a=b\x00\x01") && !holds(&m, "80010020:str8=a=b"));
+        // Registers, and memory through them.
+        m.cpu.regs[7] = 0x8001_0000;
+        m.cpu.regs[29] = 0x8000_FFFC;
+        assert!(holds(&m, "a3=0x80010000") && holds(&m, "$a3:x32=0x80010000") && !holds(&m, "a3!=0x80010000"));
+        assert!(holds(&m, "sp+4:u8=3") && holds(&m, "4(sp):u8=3") && holds(&m, "a3+4:i16=-5"));
         assert!(parse("80010020:str8<a").unwrap_err().contains("= or !="));
     }
 }

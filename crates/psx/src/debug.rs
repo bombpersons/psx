@@ -113,6 +113,10 @@ pub struct DebugGoArgs {
     #[arg(long)]
     #[serde(default)]
     pub pc: Option<String>,
+    /// The pc stop's conditions, as until's (`a3=0x800811D0`).
+    #[arg(long)]
+    #[serde(default)]
+    pub when: Vec<String>,
     /// A CPU store into `ADDR[:WIDTH]` or `LO-HI`.
     #[arg(long)]
     #[serde(default)]
@@ -169,6 +173,10 @@ pub struct DebugGoArgs {
     #[arg(long, value_enum)]
     #[serde(default)]
     pub sample_per: Option<crate::ram::SamplePer>,
+    /// A sample row at each run of ADDR, not per field.
+    #[arg(long)]
+    #[serde(default)]
+    pub sample_pc: Option<String>,
     /// As run's, to the stop.
     #[arg(long)]
     #[serde(default)]
@@ -612,6 +620,7 @@ struct Found {
 /// debug_go's stops, as an observer of the session.
 struct Stops {
     pc: Option<u32>,
+    when: Vec<crate::until::Until>,
     write: Option<(u32, u32)>,
     read: Option<(u32, u32)>,
     until: Vec<crate::until::Until>,
@@ -636,7 +645,7 @@ impl Observer for Stops {
     }
 
     fn field(&mut self, _rel: u64, m: &mut Machine) -> crate::Result<Flow> {
-        if !self.until.is_empty() && self.until.iter().all(|u| u.holds(&m.bus.ram, &m.bus.scratch)) {
+        if !self.until.is_empty() && self.until.iter().all(|u| u.holds(m)) {
             return Ok(Flow::Stop("until"));
         }
         Ok(Flow::Go)
@@ -665,7 +674,7 @@ impl Observer for Stops {
         if self.instructions.is_some_and(|n| self.steps >= n) {
             return Flow::Stop("instructions");
         }
-        if self.pc.is_some_and(|pc| pc == m.cpu.pc) {
+        if self.pc.is_some_and(|pc| pc == m.cpu.pc) && self.when.iter().all(|u| u.holds(m)) {
             return Flow::Stop("pc");
         }
         Flow::Go
@@ -712,9 +721,14 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
             "debug_go: tick stops at the next tick end (ticks=1); for more, give ticks alone",
         ));
     }
-    let until = a.until.iter().map(|s| crate::until::parse(s)).collect::<Result<Vec<_>, _>>();
+    let until = a.until.iter().map(|s| until_parse(s)).collect::<Result<Vec<_>, _>>();
+    if !a.when.is_empty() && pc.is_none() {
+        return Err(Error::invalid("debug_go: when is a pc stop's conditions: give pc too"));
+    }
+    let when = a.when.iter().map(|s| crate::until::parse(s)).collect::<Result<Vec<_>, _>>();
     let stops = Stops {
         pc,
+        when: when.map_err(|e| Error::invalid(e.replace("--until", "when")))?,
         write: range(&a.write, "write")?,
         read: range(&a.read, "read")?,
         until: until.map_err(Error::invalid)?,
@@ -764,11 +778,15 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
             sampler.field(o.s.rel(), &o.s.m, true);
         }
         // Before the stops, so a stop at a boundary has its row.
-        o.s.observe(crate::run_native::observe::Samples(sampler));
+        let rel = o.s.rel();
+        o.s.observe(crate::run_native::observe::Samples(sampler, rel));
+    } else if a.sample_pc.is_some() {
+        return Err(Error::invalid("debug_go: sample_pc takes rows of the samples: give sample too"));
     }
     o.s.observe(stops);
+    let mut watched_at = Vec::new();
     if !a.watch.is_empty() {
-        crate::run_native::watch(&mut o.s.m, &a.watch, MAX_EVENTS)?;
+        watched_at = crate::run_native::watch(&mut o.s.m, &a.watch, MAX_EVENTS)?;
         let changes_only = a.watch_changes_only;
         o.s.observe(crate::run_native::observe::Writes { enabled: true, changes_only, scopes: scopes.clone() });
     }
@@ -855,6 +873,9 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
                 detail[k] = Value::Object(r);
             }
         }
+        if !watched_at.is_empty() {
+            detail["watch"]["watched"] = json!(watched_at);
+        }
         if let Some(t) = report.get("trace") {
             detail["trace"] = json!({"instructions": t["instructions"], "lines": t["lines"],
                 "lines_dropped": t["lines_dropped"], "file": kept.join("trace.txt")});
@@ -862,7 +883,7 @@ fn go(ctx: &Ctx, a: DebugGoArgs) -> crate::Result<Value> {
     }
     o.s.observers.clear();
     let sampled: Vec<String> = a.samples.iter().filter_map(|s| s.parse().ok()).map(|c| c.name().to_string()).collect();
-    let call = json!({"go": {"pc": a.pc, "write": a.write, "read": a.read, "until": a.until, "tick": a.tick,
+    let call = json!({"go": {"pc": a.pc, "when": a.when, "sample_pc": a.sample_pc, "write": a.write, "read": a.read, "until": a.until, "tick": a.tick,
         "draw": a.draw, "gpu": a.gpu, "trace": a.trace, "sample": sampled, "watch": a.watch,
         "watch_reads": a.watch_reads,
         "fields": a.fields, "ticks": a.ticks, "instructions": a.instructions, "limit": a.limit}});
@@ -983,13 +1004,43 @@ fn sampler(ctx: &Ctx, o: &mut Open, a: &DebugGoArgs) -> crate::Result<crate::ram
         return Err(Error::invalid("sample_every takes N >= 1"));
     }
     let per = a.sample_per.unwrap_or_default();
+    let at_pc = match &a.sample_pc {
+        Some(p) if a.sample_per.is_some() || a.sample_every.is_some() => {
+            return Err(Error::invalid(format!(
+                "debug_go: sample_pc {p:?} takes a row at each hit: give it without sample_per or sample_every"
+            )));
+        }
+        Some(p) => Some(crate::run_native::resolve(p, &o.scopes)?.0),
+        None => None,
+    };
     let (cols, q) = crate::ram::with_glossary(cols, per == SamplePer::Tick, || {
         crate::run_native::glossary_quantities(&ctx.root, &o.book.media_id)
     })?;
     if per == SamplePer::Tick && o.s.tick.is_none() {
         o.s.tick = q.as_ref().map(|q| q.binding.described().tick.clone());
     }
-    Ok(crate::ram::Sampler::new(cols, a.sample_every.unwrap_or(1), per, q))
+    // Ticks count from the session's start, as its stops do.
+    let ticks = o.s.ticks;
+    let mut s = match at_pc {
+        Some(pc) => crate::ram::Sampler::at_pc(cols, pc, ticks, q),
+        None => crate::ram::Sampler::new(cols, a.sample_every.unwrap_or(1), per, q),
+    };
+    s.ticks = ticks;
+    Ok(s)
+}
+
+/// An until condition; `tick=N` and the like, which name no memory, point
+/// at the stops that count.
+fn until_parse(s: &str) -> Result<crate::until::Until, String> {
+    crate::until::parse(s).map_err(|e| {
+        let sel = crate::until::split(s).map(|(sel, _, _)| sel.to_ascii_lowercase()).unwrap_or_default();
+        match sel.as_str() {
+            "tick" | "ticks" | "field" | "fields" | "frame" | "instructions" => format!(
+                "{e}: until compares memory or registers; for a count give ticks, fields or instructions (from here)"
+            ),
+            _ => e,
+        }
+    })
 }
 
 /// Each value now, by name, as sample would write it.

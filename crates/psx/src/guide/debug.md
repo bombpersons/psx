@@ -16,7 +16,8 @@ debug_go runs until one of its stops holds, and the place it stopped is
 a new stop:
 
 - pc: the CPU is about to run the instruction at an address or a name
-  from names/.
+  from names/; with when, only where its conditions also hold (until's,
+  registers too: `a3=0x800811D0`), running on past the hits that miss.
 - write, read: right after a CPU store or load touching `ADDR[:WIDTH]`
   (4 bytes, or a names path's size, by default) or `LO-HI`, in hex or
   names (topic run, Memory formats). DMA transfers are
@@ -40,8 +41,13 @@ way in the stop's directory, stops/N/, as run's do:
   (gpu_frame.json, its VRAM and PNGs).
 - sample (with sample_every, sample_per): samples.csv, row 0 the stop
   the go starts from (or the next field, from a stop inside one), then
-  a row per field or tick to the stop it makes.
-- watch (watch_changes_only): writes.jsonl, every CPU and DMA store.
+  a row per field or tick to the stop it makes; tick counts from the
+  session's start, as the stops' ticks do. sample_pc ADDR instead takes
+  a row each time ADDR is about to run, without stopping, its tick the
+  one it runs in: with registers as columns (`ra`, `a0`, `a1->8`) it
+  lists a function's calls, their callers and arguments.
+- watch (watch_changes_only): writes.jsonl, every CPU and DMA store;
+  watched gives the address each watch landed on.
 - watch_reads: reads.jsonl, every CPU load; it slows the go as read
   does.
 
@@ -54,8 +60,11 @@ which instruction.
 
 ## Looking and changing
 
-debug_show shows the stop: registers by default; value takes what
-sample does (`ADDR:FMT[:NAME]`, names paths, quantities by name);
+debug_show shows the stop: registers by default (load_in_flight, where
+the instruction before the stop was a load, is the value its register
+takes after the stop's instruction, which still reads the old one); value
+takes what sample does (`ADDR:FMT[:NAME]`, names paths, registers,
+quantities by name);
 bytes gives memory as hex; history the instructions go kept; screen a
 PNG; stops every stop and the one the session is at; gpu the latest GPU
 capture (topic assets); hardware the CD controller's recent commands, the
